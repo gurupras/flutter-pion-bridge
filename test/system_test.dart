@@ -7,6 +7,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pion_bridge/src/data_channel.dart';
 import 'package:pion_bridge/src/exception.dart';
+import 'package:pion_bridge/src/reconnect.dart';
 import 'package:pion_bridge/src/types.dart';
 import 'package:pion_bridge/src/websocket_connection.dart';
 import 'package:pion_bridge/src/event_dispatcher.dart';
@@ -462,6 +463,96 @@ void main() {
       } on PionException catch (e) {
         expect(e.code, 'CONNECTION_LOST');
         expect(e.fatal, isTrue);
+      }
+    });
+  });
+
+  // --- Reconnection ---
+
+  group('Reconnection', () {
+    test('onReconnected fires after server drops connection', () async {
+      // Use a raw server that accepts, then drops the connection,
+      // then accepts again so ReconnectingWebSocketConnection can reconnect.
+      var connectionCount = 0;
+      WebSocket? activeSocket;
+
+      final server = await HttpServer.bind('127.0.0.1', 0);
+      final port = server.port;
+
+      server.transform(WebSocketTransformer()).listen((ws) {
+        connectionCount++;
+        activeSocket = ws;
+        // Don't close immediately on first connect — let reconnect do it
+      });
+
+      final reconnectedCompleter = Completer<void>();
+      final conn = ReconnectingWebSocketConnection(
+        onMessage: (_) {},
+        onReconnected: () {
+          if (!reconnectedCompleter.isCompleted) {
+            reconnectedCompleter.complete();
+          }
+        },
+        baseDelay: const Duration(milliseconds: 100),
+        maxDelay: const Duration(milliseconds: 500),
+      );
+
+      try {
+        await conn.connect('ws://127.0.0.1:$port/', token: 'unused');
+        expect(connectionCount, 1);
+
+        // Drop the connection server-side
+        await activeSocket?.close();
+        await Future.delayed(const Duration(milliseconds: 50));
+
+        // Wait for reconnect
+        await reconnectedCompleter.future
+            .timeout(const Duration(seconds: 5));
+
+        expect(connectionCount, 2);
+      } finally {
+        await conn.close();
+        await server.close();
+      }
+    });
+
+    test('onDisconnected fires when maxAttempts exceeded', () async {
+      // Start a server, accept the first connection, then close the server
+      // so all subsequent reconnect attempts get connection refused.
+      final server = await HttpServer.bind('127.0.0.1', 0);
+      final port = server.port;
+      WebSocket? firstSocket;
+
+      server.transform(WebSocketTransformer()).listen((ws) {
+        firstSocket = ws;
+      });
+
+      final disconnectedCompleter = Completer<void>();
+      final conn = ReconnectingWebSocketConnection(
+        onMessage: (_) {},
+        onDisconnected: () {
+          if (!disconnectedCompleter.isCompleted) {
+            disconnectedCompleter.complete();
+          }
+        },
+        maxAttempts: 2,
+        baseDelay: const Duration(milliseconds: 50),
+        maxDelay: const Duration(milliseconds: 200),
+      );
+
+      try {
+        await conn.connect('ws://127.0.0.1:$port/', token: 'unused');
+
+        // Close the server so reconnects will get connection refused
+        await server.close(force: true);
+
+        // Drop the existing connection to trigger reconnect attempts
+        await firstSocket?.close();
+
+        await disconnectedCompleter.future
+            .timeout(const Duration(seconds: 5));
+      } finally {
+        await conn.close();
       }
     });
   });

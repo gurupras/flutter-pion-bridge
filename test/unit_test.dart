@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pion_bridge/src/event_dispatcher.dart' as pion;
 import 'package:pion_bridge/src/exception.dart';
+import 'package:pion_bridge/src/reconnect.dart';
 import 'package:pion_bridge/src/types.dart';
 import 'package:pion_bridge/src/ws_message.dart';
 
@@ -154,6 +155,38 @@ void main() {
       final msg = DataChannelMessage(data: 'AQID', isBinary: true);
       expect(msg.isBinary, isTrue);
       expect(msg.binaryData, [1, 2, 3]);
+    });
+  });
+
+  group('ReconnectingWebSocketConnection backoff', () {
+    test('attempt 0 returns baseDelay', () {
+      final conn = ReconnectingWebSocketConnection(onMessage: (_) {});
+      expect(conn.backoffDelay(0), const Duration(seconds: 1));
+    });
+
+    test('attempt 1 returns 2×base', () {
+      final conn = ReconnectingWebSocketConnection(onMessage: (_) {});
+      expect(conn.backoffDelay(1), const Duration(seconds: 2));
+    });
+
+    test('attempt 4 returns 16s', () {
+      final conn = ReconnectingWebSocketConnection(onMessage: (_) {});
+      expect(conn.backoffDelay(4), const Duration(seconds: 16));
+    });
+
+    test('delay is capped at maxDelay', () {
+      final conn = ReconnectingWebSocketConnection(onMessage: (_) {});
+      expect(conn.backoffDelay(10), const Duration(seconds: 30));
+    });
+
+    test('custom baseDelay and maxDelay respected', () {
+      final conn = ReconnectingWebSocketConnection(
+        onMessage: (_) {},
+        baseDelay: const Duration(milliseconds: 500),
+        maxDelay: const Duration(seconds: 5),
+      );
+      expect(conn.backoffDelay(0), const Duration(milliseconds: 500));
+      expect(conn.backoffDelay(4), const Duration(seconds: 5)); // capped
     });
   });
 

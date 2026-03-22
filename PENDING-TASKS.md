@@ -217,5 +217,10 @@ Full end-to-end tests that build the Go server binary, start it as a subprocess 
 - [x] WebSocket keepalive / ping-pong mechanism
   - Go server sends WebSocket ping every 15s; expects pong within 30s (read deadline reset on pong)
   - requestTimeout on WebSocketConnection is now configurable (default 30s)
-- [ ] WebSocket reconnection with exponential backoff
+- [x] WebSocket reconnection with exponential backoff
+  - `ReconnectingWebSocketConnection` wraps `WebSocketConnection` with retry loop
+  - Backoff: base 1s × 2^attempt, capped at 30s; configurable baseDelay/maxDelay/maxAttempts
+  - `onReconnected` / `onDisconnected` callbacks; `autoReconnect` flag
+  - `PionBridge` uses it internally; callers re-create PeerConnections after reconnect
+  - Unit tests: 5 backoff math tests; system tests: onReconnected fires, onDisconnected fires after maxAttempts
 - [ ] Platform-specific build scripts (Android NDK Go cross-compile, iOS gomobile, Linux/macOS/Windows native)

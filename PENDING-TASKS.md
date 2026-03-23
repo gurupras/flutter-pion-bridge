@@ -223,4 +223,13 @@ Full end-to-end tests that build the Go server binary, start it as a subprocess 
   - `onReconnected` / `onDisconnected` callbacks; `autoReconnect` flag
   - `PionBridge` uses it internally; callers re-create PeerConnections after reconnect
   - Unit tests: 5 backoff math tests; system tests: onReconnected fires, onDisconnected fires after maxAttempts
-- [ ] Platform-specific build scripts (Android NDK Go cross-compile, iOS gomobile, Linux/macOS/Windows native)
+- [x] Platform-specific build scripts and native plugin glue
+  - `scripts/build_android.sh` — arm64-v8a, armeabi-v7a, x86_64 via NDK (CGO_ENABLED=0)
+  - `scripts/build_linux.sh` — amd64 / arm64; output to `linux/bundle/lib/pionbridge`
+  - `scripts/build_macos.sh` — universal binary (amd64 + arm64 via lipo); output to `macos/Resources/pionbridge`
+  - `scripts/build_windows.sh` — amd64 cross-compile; output to `windows/runner/resources/pionbridge.exe`
+  - `scripts/build_all.sh` — runs all platform builds, skipping unavailable ones
+  - `macos/Classes/PionBridgePlugin.swift` — Swift plugin (MethodChannel, Process, 10s timeout, stderr→NSLog)
+  - `linux/pionbridge_plugin.cc` + `CMakeLists.txt` — C++ plugin (g_spawn, PeekNamedPipe-style polling)
+  - `windows/pionbridge_plugin.cpp` + `CMakeLists.txt` — C++ plugin (CreateProcess, PeekNamedPipe, background thread)
+  - `pubspec.yaml` updated with macos / linux / windows plugin declarations

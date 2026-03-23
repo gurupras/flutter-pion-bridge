@@ -10,11 +10,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/pion-bridge/server/internal/pionserver"
 )
 
 func main() {
 	// Initialize registry
-	registry := NewRegistry()
+	registry := pionserver.NewRegistry()
 
 	// Start background cleanup: every 30s, remove handles older than 300s
 	registry.StartCleanup(30*time.Second, 300*time.Second)
@@ -23,7 +24,7 @@ func main() {
 	token := strings.ReplaceAll(uuid.New().String(), "-", "")
 
 	// Create and start WebSocket server
-	server := NewServer(registry, token)
+	server := pionserver.NewServer(registry, token)
 	listener, err := server.ListenAndServe()
 	if err != nil {
 		log.Fatalf("Failed to start server: %v", err)

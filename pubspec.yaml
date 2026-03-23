@@ -22,3 +22,11 @@ flutter:
       android:
         package: io.filemingo.pionbridge
         pluginClass: PionBridgePlugin
+      macos:
+        pluginClass: PionBridgePlugin
+      linux:
+        pluginClass: PionbridgePlugin
+      windows:
+        pluginClass: PionBridgePlugin
+      ios:
+        pluginClass: PionBridgePlugin

@@ -1,54 +1,62 @@
 #!/usr/bin/env bash
-# Build the Go server binary for Android.
-# Outputs libpionbridge.so for each ABI into android/src/main/jniLibs/<ABI>/.
+# Build the PionBridge Android bindings via gomobile bind, then unpack the AAR
+# so it can be consumed by the plugin library module without AAR-in-AAR issues.
+#
+# Outputs:
+#   android/libs/pionbridge-go.jar        (Java bindings)
+#   android/src/main/jniLibs/<ABI>/*.so   (native libs)
 #
 # Requirements:
-#   - ANDROID_NDK_HOME must be set (or passed as first arg)
-#   - Go toolchain installed
+#   - Go toolchain
+#   - gomobile: go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init
+#   - ANDROID_HOME  (default: ~/android-sdk-linux)
+#   - ANDROID_NDK_HOME  (default: ANDROID_HOME/ndk/28.2.13676358)
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-GO_DIR="$REPO_ROOT/go"
-OUT_BASE="$REPO_ROOT/android/src/main/jniLibs"
 
-NDK="${1:-${ANDROID_NDK_HOME:-}}"
-if [[ -z "$NDK" ]]; then
-  echo "ERROR: Set ANDROID_NDK_HOME or pass NDK path as first argument." >&2
+export ANDROID_HOME="${ANDROID_HOME:-$HOME/android-sdk-linux}"
+export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/28.2.13676358}"
+
+LIBS_DIR="$REPO_ROOT/android/libs"
+JNI_DIR="$REPO_ROOT/android/src/main/jniLibs"
+WORK_DIR="$(mktemp -d)"
+AAR="$WORK_DIR/pionbridge.aar"
+
+mkdir -p "$LIBS_DIR"
+
+if ! command -v gomobile &>/dev/null; then
+  echo "ERROR: gomobile not found. Run:" >&2
+  echo "  go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init" >&2
   exit 1
 fi
 
-# Detect host tag (linux-x86_64 / darwin-x86_64 / etc.)
-case "$(uname -s)-$(uname -m)" in
-  Linux-x86_64)  HOST_TAG="linux-x86_64" ;;
-  Darwin-x86_64) HOST_TAG="darwin-x86_64" ;;
-  Darwin-arm64)  HOST_TAG="darwin-x86_64" ;;  # NDK ships x86_64 tools on Apple Silicon too
-  *) echo "Unsupported host for Android cross-compile: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
-esac
+echo "Building Android AAR via gomobile bind…"
+cd "$REPO_ROOT/go"
+gomobile bind \
+  -target android \
+  -androidapi 21 \
+  -ldflags="-checklinkname=0" \
+  -o "$AAR" \
+  ./mobile/
 
-TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin"
-API=21  # min SDK
+echo "Unpacking AAR…"
 
-declare -A ABIS=(
-  ["arm64-v8a"]="aarch64-linux-android${API}-clang aarch64 arm64 "
-  ["armeabi-v7a"]="armv7a-linux-androideabi${API}-clang arm arm 7"
-  ["x86_64"]="x86_64-linux-android${API}-clang amd64 amd64 "
-)
+# Extract classes.jar → android/libs/pionbridge-go.jar
+unzip -p "$AAR" classes.jar > "$LIBS_DIR/pionbridge-go.jar"
+echo "  → android/libs/pionbridge-go.jar"
 
-for ABI in "${!ABIS[@]}"; do
-  read -r CC GOARCH GOARCH2 GOARM <<< "${ABIS[$ABI]}"
-  OUT_DIR="$OUT_BASE/$ABI"
-  mkdir -p "$OUT_DIR"
-
-  echo "Building $ABI …"
-  env CGO_ENABLED=0 \
-      GOOS=android \
-      GOARCH="$GOARCH" \
-      ${GOARM:+GOARM=$GOARM} \
-      go build -C "$GO_DIR" -o "$OUT_DIR/libpionbridge.so" .
-
-  echo "  → $OUT_DIR/libpionbridge.so"
+# Extract native libs → android/src/main/jniLibs/<ABI>/
+for ABI in arm64-v8a armeabi-v7a x86_64; do
+  SO_PATH="jni/$ABI/libgojni.so"
+  if unzip -l "$AAR" | grep -q "$SO_PATH"; then
+    mkdir -p "$JNI_DIR/$ABI"
+    unzip -p "$AAR" "$SO_PATH" > "$JNI_DIR/$ABI/libgojni.so"
+    echo "  → android/src/main/jniLibs/$ABI/libgojni.so"
+  fi
 done
 
+rm -rf "$WORK_DIR"
 echo "Android build complete."

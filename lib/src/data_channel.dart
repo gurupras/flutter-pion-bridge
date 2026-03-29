@@ -1,4 +1,4 @@
-import 'dart:convert';
+import 'dart:typed_data';
 
 import 'event_dispatcher.dart';
 import 'resource.dart';
@@ -50,7 +50,7 @@ class PionDataChannel extends PionResource {
 
   Future<void> sendBinary(List<int> data) async {
     await request('dc:send', {
-      'data': base64Encode(data),
+      'data': data is Uint8List ? data : Uint8List.fromList(data),
       'is_binary': true,
     });
   }

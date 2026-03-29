@@ -13,7 +13,7 @@ import 'package:pion_bridge/src/websocket_connection.dart';
 import 'package:pion_bridge/src/event_dispatcher.dart';
 import 'package:pion_bridge/src/ws_message.dart';
 
-import 'test_harness.dart';
+import '../helpers/test_harness.dart';
 
 void main() {
   late TestHarness harness;

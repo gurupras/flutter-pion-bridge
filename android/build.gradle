@@ -42,4 +42,6 @@ android {
 
 dependencies {
     implementation 'androidx.annotation:annotation:1.7.1'
+    // gomobile Java bindings — built by scripts/build_android.sh
+    implementation files('libs/pionbridge-go.jar')
 }

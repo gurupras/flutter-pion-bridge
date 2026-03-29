@@ -1,0 +1,5 @@
+# gomobile build artifacts — run scripts/build_android.sh to regenerate
+libs/pionbridge.aar
+libs/pionbridge-go.jar
+libs/pionbridge-sources.jar
+src/main/jniLibs/

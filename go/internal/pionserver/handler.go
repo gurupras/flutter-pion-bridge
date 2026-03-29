@@ -431,20 +431,21 @@ func (h *Handler) handleDCSend(msg Message) Message {
 		return errMsg
 	}
 
-	dataStr, _ := msg.Data["data"].(string)
 	isBinary, _ := msg.Data["is_binary"].(bool)
 
 	var bytesSent int
 	if isBinary {
-		decoded, err := base64.StdEncoding.DecodeString(dataStr)
-		if err != nil {
-			return ErrorResponse(msg.ID, "INVALID_REQUEST", "invalid base64 data: "+err.Error(), false, msg.Handle)
+		// Binary data arrives as []byte (msgpack bin type)
+		payload, ok := msg.Data["data"].([]byte)
+		if !ok {
+			return ErrorResponse(msg.ID, "INVALID_REQUEST", "binary data must be msgpack bin type", false, msg.Handle)
 		}
-		if err := dc.Send(decoded); err != nil {
+		if err := dc.Send(payload); err != nil {
 			return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, msg.Handle)
 		}
-		bytesSent = len(decoded)
+		bytesSent = len(payload)
 	} else {
+		dataStr, _ := msg.Data["data"].(string)
 		if err := dc.SendText(dataStr); err != nil {
 			return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, msg.Handle)
 		}

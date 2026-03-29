@@ -1,6 +1,6 @@
 module github.com/pion-bridge/server
 
-go 1.22
+go 1.25.0
 
 require (
 	github.com/google/uuid v1.6.0
@@ -27,7 +27,11 @@ require (
 	github.com/pion/turn/v4 v4.0.0 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	golang.org/x/crypto v0.29.0 // indirect
-	golang.org/x/net v0.31.0 // indirect
-	golang.org/x/sys v0.27.0 // indirect
+	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/mobile v0.0.0-20260312152759-81488f6aeb60 // indirect
+	golang.org/x/mod v0.34.0 // indirect
+	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
+	golang.org/x/tools v0.43.0 // indirect
 )

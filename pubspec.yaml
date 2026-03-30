@@ -1,6 +1,6 @@
 name: pion_bridge
 description: Flutter library wrapping Pion WebRTC via a local Go WebSocket sidecar.
-version: 0.1.0
+version: 1.2.0
 
 environment:
   sdk: '>=3.0.0 <4.0.0'

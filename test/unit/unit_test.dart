@@ -1,8 +1,10 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pion_bridge/src/data_channel.dart';
 import 'package:pion_bridge/src/event_dispatcher.dart' as pion;
 import 'package:pion_bridge/src/exception.dart';
 import 'package:pion_bridge/src/reconnect.dart';
 import 'package:pion_bridge/src/types.dart';
+import 'package:pion_bridge/src/websocket_connection.dart';
 import 'package:pion_bridge/src/ws_message.dart';
 
 void main() {
@@ -187,6 +189,83 @@ void main() {
       );
       expect(conn.backoffDelay(0), const Duration(milliseconds: 500));
       expect(conn.backoffDelay(4), const Duration(seconds: 5)); // capped
+    });
+  });
+
+  group('PionDataChannel', () {
+    test('onBufferedAmountLow stream emits when event:bufferedAmountLow is broadcast',
+        () async {
+      final dispatcher = pion.EventDispatcher();
+      // WebSocketConnection is not connected; we only need it for the
+      // constructor — the stream test never calls request().
+      final connection = WebSocketConnection(onMessage: (_) {});
+      final dc = PionDataChannel(
+        'test-handle-32charsxxxxxxxxxxxxxxxxx',
+        connection,
+        dispatcher,
+        label: 'test',
+      );
+
+      var fired = false;
+      dc.onBufferedAmountLow.listen((_) => fired = true);
+
+      dispatcher.broadcast(WsMessage(
+        type: 'event:bufferedAmountLow',
+        id: 0,
+        handle: 'test-handle-32charsxxxxxxxxxxxxxxxxx',
+        data: {},
+      ));
+
+      await Future.delayed(Duration.zero);
+      expect(fired, isTrue);
+    });
+
+    test('onBufferedAmountLow does not emit for unrelated event types', () async {
+      final dispatcher = pion.EventDispatcher();
+      final connection = WebSocketConnection(onMessage: (_) {});
+      final dc = PionDataChannel(
+        'test-handle-32charsxxxxxxxxxxxxxxxxx',
+        connection,
+        dispatcher,
+        label: 'test',
+      );
+
+      var fired = false;
+      dc.onBufferedAmountLow.listen((_) => fired = true);
+
+      dispatcher.broadcast(WsMessage(
+        type: 'event:dataChannelOpen',
+        id: 0,
+        handle: 'test-handle-32charsxxxxxxxxxxxxxxxxx',
+        data: {},
+      ));
+
+      await Future.delayed(Duration.zero);
+      expect(fired, isFalse);
+    });
+
+    test('onBufferedAmountLow does not emit for a different handle', () async {
+      final dispatcher = pion.EventDispatcher();
+      final connection = WebSocketConnection(onMessage: (_) {});
+      final dc = PionDataChannel(
+        'handle-a-32charsxxxxxxxxxxxxxxxxxxxxxxx',
+        connection,
+        dispatcher,
+        label: 'test',
+      );
+
+      var fired = false;
+      dc.onBufferedAmountLow.listen((_) => fired = true);
+
+      dispatcher.broadcast(WsMessage(
+        type: 'event:bufferedAmountLow',
+        id: 0,
+        handle: 'handle-b-32charsxxxxxxxxxxxxxxxxxxxxxxx',
+        data: {},
+      ));
+
+      await Future.delayed(Duration.zero);
+      expect(fired, isFalse);
     });
   });
 

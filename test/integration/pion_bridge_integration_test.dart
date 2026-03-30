@@ -4,6 +4,7 @@ library;
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pion_bridge/src/data_channel.dart';
 import 'package:pion_bridge/src/exception.dart';
@@ -404,6 +405,32 @@ void main() {
       await closedCompleter.future.timeout(const Duration(seconds: 5));
     });
 
+    test('setBufferedAmountLowThreshold() completes without error', () async {
+      final pair = await harness.createConnectedPair();
+
+      // Should not throw
+      await pair.offererDc.setBufferedAmountLowThreshold(1024);
+    });
+
+    test('onBufferedAmountLow stream emits after threshold is set and buffer drains',
+        () async {
+      final pair = await harness.createConnectedPair();
+
+      // Set threshold = 1 byte: event fires when the send buffer drains to 0
+      await pair.offererDc.setBufferedAmountLowThreshold(1);
+
+      final fired = Completer<void>();
+      pair.offererDc.onBufferedAmountLow.listen((_) {
+        if (!fired.isCompleted) fired.complete();
+      });
+
+      // Sending data pushes the buffer above the threshold; when the data is
+      // transmitted (loopback), the buffer drains to 0 (< 1) and the event fires.
+      await pair.offererDc.send('trigger buffered amount low');
+
+      await fired.future.timeout(const Duration(seconds: 5));
+    });
+
     test('close() on DataChannel sends resource:delete', () async {
       final pc = await harness.createPeerConnection();
       final dc = await pc.createDataChannel('chat');
@@ -554,6 +581,285 @@ void main() {
       } finally {
         await conn.close();
       }
+    });
+  });
+
+  // --- DataChannel ordering & stress ---
+
+  group('DataChannel ordering & stress', () {
+    test('send 500 messages in sequence — all arrive in order', () async {
+      final pair = await harness.createConnectedPair();
+
+      final received = <String>[];
+      pair.answererDc.onMessage.listen((msg) {
+        received.add(msg.data as String);
+      });
+
+      // Send 500 sequential messages
+      for (int i = 0; i < 500; i++) {
+        await pair.offererDc.send('msg-$i');
+      }
+
+      // Wait for all 500 to arrive
+      await Future.delayed(const Duration(seconds: 5));
+
+      expect(received.length, 500);
+      for (int i = 0; i < 500; i++) {
+        expect(received[i], 'msg-$i');
+      }
+
+      await pair.offerer.close();
+      await pair.answerer.close();
+    });
+
+    test('send 100 messages concurrently — all arrive', () async {
+      final pair = await harness.createConnectedPair();
+
+      final received = <String>[];
+      pair.answererDc.onMessage.listen((msg) {
+        received.add(msg.data as String);
+      });
+
+      // Send 100 messages concurrently without awaiting each
+      final futures = <Future<void>>[];
+      for (int i = 0; i < 100; i++) {
+        futures.add(pair.offererDc.send('concurrent-$i'));
+      }
+      await Future.wait(futures);
+
+      // Wait for all to arrive
+      await Future.delayed(const Duration(seconds: 3));
+
+      expect(received.length, 100);
+      expect(
+        received.toSet().length,
+        100,
+        reason: 'All messages should be unique',
+      );
+
+      await pair.offerer.close();
+      await pair.answerer.close();
+    });
+  });
+
+  // --- Multiple DataChannels per PeerConnection ---
+
+  group('Multiple DataChannels per PeerConnection', () {
+    test('three DCs on one PC — messages stay on correct channel', () async {
+      final offerer = await harness.createPeerConnection();
+      final answerer = await harness.createPeerConnection();
+
+      // Subscribe to answerer's onDataChannel before signaling
+      final answererDcs = <String, PionDataChannel>{};
+      final dcCompleter = Completer<void>();
+      var dcCount = 0;
+
+      answerer.onDataChannel.listen((dc) {
+        answererDcs[dc.label] = dc;
+        dcCount++;
+        if (dcCount == 3 && !dcCompleter.isCompleted) {
+          dcCompleter.complete();
+        }
+      });
+
+      // Offerer creates 3 DCs before generating offer
+      final offererDcA = await offerer.createDataChannel('dc-a');
+      final offererDcB = await offerer.createDataChannel('dc-b');
+      final offererDcC = await offerer.createDataChannel('dc-c');
+
+      // Full signaling
+      final offererCandidates = <IceCandidate>[];
+      final answererCandidates = <IceCandidate>[];
+      offerer.onIceCandidate.listen(offererCandidates.add);
+      answerer.onIceCandidate.listen(answererCandidates.add);
+
+      final offer = await offerer.createOffer();
+      await offerer.setLocalDescription(offer, 'offer');
+      await answerer.setRemoteDescription(offer, 'offer');
+
+      final answer = await answerer.createAnswer();
+      await answerer.setLocalDescription(answer, 'answer');
+      await offerer.setRemoteDescription(answer, 'answer');
+
+      await Future.delayed(const Duration(seconds: 1));
+
+      for (final c in offererCandidates) {
+        await answerer.addIceCandidate(c);
+      }
+      for (final c in answererCandidates) {
+        await offerer.addIceCandidate(c);
+      }
+
+      // Wait for all DCs to be established
+      await dcCompleter.future.timeout(const Duration(seconds: 10));
+
+      // Collect messages from each answerer DC
+      final messagesA = <String>[];
+      final messagesB = <String>[];
+      final messagesC = <String>[];
+
+      answererDcs['dc-a']?.onMessage.listen((msg) => messagesA.add(msg.data));
+      answererDcs['dc-b']?.onMessage.listen((msg) => messagesB.add(msg.data));
+      answererDcs['dc-c']?.onMessage.listen((msg) => messagesC.add(msg.data));
+
+      // Send distinct payloads on each offerer DC
+      await offererDcA.send('hello-a');
+      await offererDcB.send('hello-b');
+      await offererDcC.send('hello-c');
+
+      await Future.delayed(const Duration(seconds: 2));
+
+      // Verify each DC received its matching message
+      expect(messagesA, ['hello-a']);
+      expect(messagesB, ['hello-b']);
+      expect(messagesC, ['hello-c']);
+
+      await offerer.close();
+      await answerer.close();
+    });
+  });
+
+  // --- Rapid create/delete cycles ---
+
+  group('Rapid create/delete cycles', () {
+    test('create and close 50 PeerConnections without crashing', () async {
+      // Rapidly create and close 50 PCs
+      for (int i = 0; i < 50; i++) {
+        final pc = await harness.createPeerConnection();
+        await pc.close();
+      }
+
+      // Verify the server still responds
+      final testPc = await harness.createPeerConnection();
+      expect(testPc.handle, hasLength(32));
+      await testPc.close();
+    });
+
+    test('create and close 50 DataChannels on same PC without crashing',
+        () async {
+      final pc = await harness.createPeerConnection();
+
+      // Rapidly create and close 50 DCs
+      for (int i = 0; i < 50; i++) {
+        final dc = await pc.createDataChannel('dc-$i');
+        await dc.close();
+      }
+
+      // Verify the server still responds
+      final testDc = await pc.createDataChannel('test');
+      expect(testDc.handle, hasLength(32));
+      await testDc.close();
+
+      await pc.close();
+    });
+  });
+
+  // --- Large messages and high throughput ---
+
+  group('Large messages and high throughput', () {
+    test('send 60 KB binary payload — arrives intact', () async {
+      final pair = await harness.createConnectedPair();
+
+      final received = Completer<List<int>>();
+      pair.answererDc.onMessage.listen((msg) {
+        if (!received.isCompleted && msg.isBinary) {
+          received.complete(msg.binaryData);
+        }
+      });
+
+      // Generate a 60 KB payload (pion/webrtc max is 64KB)
+      final payload = List<int>.generate(
+        60 * 1024,
+        (index) => index % 256,
+      );
+
+      await pair.offererDc.sendBinary(payload);
+
+      final result = await received.future.timeout(
+        const Duration(seconds: 15),
+        onTimeout: () => throw TimeoutException(
+          'No binary message received',
+          const Duration(seconds: 15),
+        ),
+      );
+
+      expect(result.length, 60 * 1024);
+      expect(result, payload);
+
+      await pair.offerer.close();
+      await pair.answerer.close();
+    });
+
+    test('send 30 KB binary messages back-and-forth 10 times', () async {
+      final pair = await harness.createConnectedPair();
+
+      final responses = <int>[];
+      pair.offererDc.onMessage.listen((msg) {
+        if (msg.isBinary) {
+          responses.add(msg.binaryData.length);
+        }
+      });
+
+      pair.answererDc.onMessage.listen((msg) {
+        // Echo back if binary
+        if (msg.isBinary) {
+          unawaited(pair.answererDc.sendBinary(msg.binaryData));
+        }
+      });
+
+      // Send 30 KB binary message 10 times (well under 64KB limit)
+      final payload = List<int>.generate(30 * 1024, (i) => i % 256);
+      for (int i = 0; i < 10; i++) {
+        await pair.offererDc.sendBinary(payload);
+      }
+
+      // Wait for echoes
+      await Future.delayed(const Duration(seconds: 5));
+
+      expect(responses.length, 10);
+      expect(responses, everyElement(30 * 1024));
+
+      await pair.offerer.close();
+      await pair.answerer.close();
+    });
+  });
+
+  // --- ICE server configuration ---
+
+  group('ICE server configuration', () {
+    test('create PeerConnection with TURN server config — no error', () async {
+      final turnServers = [
+        IceServer(
+          urls: ['turn:turn.example.com:3478?transport=udp'],
+          username: 'user',
+          credential: 'pass',
+        ),
+      ];
+
+      final pc = await harness.createPeerConnection(iceServers: turnServers);
+
+      // Verify PC was created successfully
+      expect(pc.handle, hasLength(32));
+
+      await pc.close();
+    });
+
+    test('create PeerConnection with multiple STUN and TURN servers', () async {
+      final iceServers = [
+        IceServer(urls: ['stun:stun.l.google.com:19302']),
+        IceServer(urls: ['stun:stun1.l.google.com:19302']),
+        IceServer(
+          urls: ['turn:turn.example.com:3478'],
+          username: 'user',
+          credential: 'pass',
+        ),
+      ];
+
+      final pc = await harness.createPeerConnection(iceServers: iceServers);
+
+      expect(pc.handle, hasLength(32));
+
+      await pc.close();
     });
   });
 }

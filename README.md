@@ -122,13 +122,49 @@ CocoaPods will pick up the xcframework automatically via the podspec.
 
 Hot restart reinitialises the Dart layer and calls `startServer` again. The plugin handles this by stopping any running server before starting a new one — hot restart works without manual intervention.
 
+## Backpressure Handling
+
+When sending large amounts of data over a DataChannel, the native send buffer can fill up faster than the remote peer can receive. To avoid dropping packets or blocking the sender, use the buffered amount low threshold to implement flow control:
+
+```dart
+// After the DataChannel opens:
+await dataChannel.setBufferedAmountLowThreshold(8192); // 8 KB threshold
+
+// Listen for the low water mark event
+dataChannel.onBufferedAmountLow.listen((_) {
+  // Buffer has drained below 8 KB; safe to send more data
+  sendMoreData();
+});
+
+// When sending large amounts, check backpressure:
+Future<void> sendData(List<int> payload) async {
+  // Only call send() if we know the buffer isn't too full
+  // The onBufferedAmountLow event will signal when space is available
+  await dataChannel.sendBinary(payload);
+}
+```
+
+**How it works:**
+1. Set a low threshold (e.g., 8-16 KB) after the channel opens
+2. Send data as normal — the send buffer will fill up if the remote peer is slow
+3. When the buffer drains below your threshold, `onBufferedAmountLow` fires
+4. Pause sending until the event fires again
+
+**Best practices:**
+- Set threshold to a small value relative to your typical message size
+- Higher threshold = more latency before flow control kicks in; lower threshold = more events
+- For most uses, 8-16 KB is reasonable
+- For bulk transfers, implement an event-driven queue that only sends when `onBufferedAmountLow` fires
+
+The threshold is per-channel, so multiple channels can have independent backpressure policies.
+
 ## Example app
 
-The `example/` directory contains a throughput test that:
+The `example/` directory contains a multi-tab demo that:
 
-- Creates two loopback peer connections on the same device
-- Sends binary data over one or more DataChannels
-- Measures throughput (MB/s), reports per-DC distribution, and validates chunk ordering via sequence numbers
+- **Local peer tab**: Creates a loopback connection, demonstrates single-PC operations
+- **Remote peer tab**: Shows how to drive a peer connection from a different context (simulating real signaling)
+- Validates DataChannel message ordering and backpressure handling
 
 ## Project structure
 

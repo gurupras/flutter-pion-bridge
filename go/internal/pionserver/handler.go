@@ -45,6 +45,8 @@ func (h *Handler) HandleMessage(msg *Message) Message {
 		return h.handlePCCreateDc(msg)
 	case "dc:send":
 		return h.handleDCSend(msg)
+	case "dc:setBufferedAmountLowThreshold":
+		return h.handleDCSetBufferedAmountLowThreshold(msg)
 	case "dc:close":
 		return h.handleDCClose(msg)
 	case "resource:delete":
@@ -454,6 +456,26 @@ func (h *Handler) handleDCSend(msg *Message) Message {
 	})
 }
 
+func (h *Handler) handleDCSetBufferedAmountLowThreshold(msg *Message) Message {
+	dc, errMsg, ok := h.lookupDC(msg)
+	if !ok {
+		return errMsg
+	}
+
+	threshold, ok := toUint64(msg.Data["threshold"])
+	if !ok {
+		return ErrorResponse(msg.ID, "INVALID_REQUEST", "missing or invalid threshold", false, msg.Handle)
+	}
+
+	dcHandle := msg.Handle
+	dc.SetBufferedAmountLowThreshold(threshold)
+	dc.OnBufferedAmountLow(func() {
+		h.sendEvent(Event("event:bufferedAmountLow", dcHandle, map[string]interface{}{}))
+	})
+
+	return AckResponse("dc:setBufferedAmountLowThreshold", msg.ID, msg.Handle, map[string]interface{}{})
+}
+
 func (h *Handler) handleDCClose(msg *Message) Message {
 	dc, errMsg, ok := h.lookupDC(msg)
 	if !ok {
@@ -493,6 +515,37 @@ func parseSdpType(t string) webrtc.SDPType {
 		return webrtc.SDPTypeRollback
 	default:
 		return webrtc.SDPTypeOffer
+	}
+}
+
+func toUint64(v interface{}) (uint64, bool) {
+	switch n := v.(type) {
+	case int:
+		return uint64(n), true
+	case int8:
+		return uint64(n), true
+	case int16:
+		return uint64(n), true
+	case int32:
+		return uint64(n), true
+	case int64:
+		return uint64(n), true
+	case uint:
+		return uint64(n), true
+	case uint8:
+		return uint64(n), true
+	case uint16:
+		return uint64(n), true
+	case uint32:
+		return uint64(n), true
+	case uint64:
+		return n, true
+	case float32:
+		return uint64(n), true
+	case float64:
+		return uint64(n), true
+	default:
+		return 0, false
 	}
 }
 

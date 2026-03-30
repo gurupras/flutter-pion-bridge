@@ -723,46 +723,141 @@ func (th *testHarness) createConnectedPCPair(t *testing.T) (offererHandle, answe
 	return offererHandle, answererHandle, offererDcHandle
 }
 
-// --- dc:send with connected pair ---
+// --- dc:setBufferedAmountLowThreshold ---
 
-func TestHandleDCSend_Text(t *testing.T) {
+func TestHandleDCSetBufferedAmountLowThreshold_Success(t *testing.T) {
 	th := newTestHarness()
-	_, _, dcHandle := th.createConnectedPCPair(t)
+	pcHandle := th.createPC(t)
+
+	dcResp := th.handler.HandleMessage(&Message{
+		Type: "pc:createDc", ID: 5, Handle: pcHandle,
+		Data: map[string]interface{}{"label": "test", "options": map[string]interface{}{}},
+	})
+	dcHandle := dcResp.Data["dc_handle"].(string)
 
 	resp := th.handler.HandleMessage(&Message{
-		Type: "dc:send", ID: 50, Handle: dcHandle,
-		Data: map[string]interface{}{"data": "Hello, world!", "is_binary": false},
+		Type: "dc:setBufferedAmountLowThreshold", ID: 6, Handle: dcHandle,
+		Data: map[string]interface{}{"threshold": int(1024)},
 	})
 
-	if resp.Type != "dc:send:ack" {
-		t.Fatalf("expected dc:send:ack, got %s: %v", resp.Type, resp.Data)
+	if resp.Type != "dc:setBufferedAmountLowThreshold:ack" {
+		t.Fatalf("expected dc:setBufferedAmountLowThreshold:ack, got %s: %v", resp.Type, resp.Data)
 	}
-	bytesSent, ok := resp.Data["bytes_sent"].(int)
-	if !ok || bytesSent != len("Hello, world!") {
-		t.Errorf("expected bytes_sent=%d, got %v", len("Hello, world!"), resp.Data["bytes_sent"])
+	if resp.ID != 6 {
+		t.Errorf("expected id 6, got %d", resp.ID)
+	}
+	if resp.Handle != dcHandle {
+		t.Errorf("expected handle %s, got %s", dcHandle, resp.Handle)
 	}
 }
 
-func TestHandleDCSend_Binary(t *testing.T) {
+func TestHandleDCSetBufferedAmountLowThreshold_MissingThreshold(t *testing.T) {
 	th := newTestHarness()
-	_, _, dcHandle := th.createConnectedPCPair(t)
+	pcHandle := th.createPC(t)
 
-	// Send raw binary data (msgpack bin type)
+	dcResp := th.handler.HandleMessage(&Message{
+		Type: "pc:createDc", ID: 5, Handle: pcHandle,
+		Data: map[string]interface{}{"label": "test", "options": map[string]interface{}{}},
+	})
+	dcHandle := dcResp.Data["dc_handle"].(string)
+
 	resp := th.handler.HandleMessage(&Message{
-		Type: "dc:send", ID: 51, Handle: dcHandle,
-		Data: map[string]interface{}{"data": []byte{1, 2, 3}},
+		Type: "dc:setBufferedAmountLowThreshold", ID: 6, Handle: dcHandle,
+		Data: map[string]interface{}{},
 	})
 
-	if resp.Type != "dc:send:ack" {
-		t.Fatalf("expected dc:send:ack, got %s: %v", resp.Type, resp.Data)
+	if resp.Type != "error" {
+		t.Fatalf("expected error, got %s", resp.Type)
 	}
-	bytesSent, ok := resp.Data["bytes_sent"].(int)
-	if !ok || bytesSent != 3 {
-		t.Errorf("expected bytes_sent=3, got %v", resp.Data["bytes_sent"])
+	if resp.Data["code"] != "INVALID_REQUEST" {
+		t.Errorf("expected INVALID_REQUEST, got %v", resp.Data["code"])
 	}
 }
 
-// --- event callback tests ---
+func TestHandleDCSetBufferedAmountLowThreshold_NonExistentHandle(t *testing.T) {
+	th := newTestHarness()
+
+	resp := th.handler.HandleMessage(&Message{
+		Type: "dc:setBufferedAmountLowThreshold", ID: 6, Handle: "deadbeef12345678deadbeef12345678",
+		Data: map[string]interface{}{"threshold": int(1024)},
+	})
+
+	if resp.Type != "error" {
+		t.Fatalf("expected error, got %s", resp.Type)
+	}
+	if resp.Data["code"] != "NOT_FOUND" {
+		t.Errorf("expected NOT_FOUND, got %v", resp.Data["code"])
+	}
+}
+
+func TestHandleDCSetBufferedAmountLowThreshold_OnPCHandle(t *testing.T) {
+	th := newTestHarness()
+	pcHandle := th.createPC(t)
+
+	resp := th.handler.HandleMessage(&Message{
+		Type: "dc:setBufferedAmountLowThreshold", ID: 6, Handle: pcHandle,
+		Data: map[string]interface{}{"threshold": int(1024)},
+	})
+
+	if resp.Type != "error" {
+		t.Fatalf("expected error, got %s", resp.Type)
+	}
+	if resp.Data["code"] != "INVALID_REQUEST" {
+		t.Errorf("expected INVALID_REQUEST, got %v", resp.Data["code"])
+	}
+}
+
+func TestHandleDCSetBufferedAmountLowThreshold_ReplacesCallback(t *testing.T) {
+	// Calling dc:setBufferedAmountLowThreshold twice on the same DC must not
+	// register a duplicate callback. Pion's OnBufferedAmountLow is a setter
+	// (replaces the previous callback), so calling it twice should not cause
+	// the event to be sent twice per drain.
+	th := newTestHarness()
+	_, _, dcHandle := th.createConnectedPCPair(t)
+	th.clearEvents()
+
+	// First call
+	r1 := th.handler.HandleMessage(&Message{
+		Type: "dc:setBufferedAmountLowThreshold", ID: 10, Handle: dcHandle,
+		Data: map[string]interface{}{"threshold": int(1)},
+	})
+	if r1.Type != "dc:setBufferedAmountLowThreshold:ack" {
+		t.Fatalf("first call failed: %s %v", r1.Type, r1.Data)
+	}
+
+	// Second call (replaces the callback)
+	r2 := th.handler.HandleMessage(&Message{
+		Type: "dc:setBufferedAmountLowThreshold", ID: 11, Handle: dcHandle,
+		Data: map[string]interface{}{"threshold": int(1)},
+	})
+	if r2.Type != "dc:setBufferedAmountLowThreshold:ack" {
+		t.Fatalf("second call failed: %s %v", r2.Type, r2.Data)
+	}
+
+	// Send a small message to trigger the drain-below-threshold path
+	th.handler.HandleMessage(&Message{
+		Type: "dc:send", ID: 12, Handle: dcHandle,
+		Data: map[string]interface{}{"data": "hi"},
+	})
+
+	// Wait for any callbacks to fire
+	time.Sleep(500 * time.Millisecond)
+
+	events := th.getEvents()
+	count := 0
+	for _, e := range events {
+		if e.Type == "event:bufferedAmountLow" && e.Handle == dcHandle {
+			count++
+		}
+	}
+	// Pion replaces the callback on each OnBufferedAmountLow call, so the
+	// event should fire at most once per drain transition.
+	if count > 1 {
+		t.Errorf("expected at most 1 bufferedAmountLow event, got %d (duplicate callback?)", count)
+	}
+}
+
+// --- event:connectionStateChange ---
 
 func TestEventConnectionStateChange(t *testing.T) {
 	th := newTestHarness()

@@ -470,6 +470,125 @@ func TestIntegration_FullFlow(t *testing.T) {
 	}
 }
 
+// setupConnectedDCPair performs full signaling + ICE exchange on a new pair and
+// returns the offerer's DC handle once SCTP is established.
+func setupConnectedDCPair(t *testing.T, ic *integrationClient) (offererDcHandle string) {
+	t.Helper()
+
+	offererResp := ic.send(Message{Type: "pc:create", ID: ic.getID(), Data: map[string]interface{}{}})
+	if offererResp.Type != "pc:create:ack" {
+		t.Fatalf("create offerer: %s", offererResp.Type)
+	}
+	offerer := offererResp.Data["handle"].(string)
+
+	answererResp := ic.send(Message{Type: "pc:create", ID: ic.getID(), Data: map[string]interface{}{}})
+	if answererResp.Type != "pc:create:ack" {
+		t.Fatalf("create answerer: %s", answererResp.Type)
+	}
+	answerer := answererResp.Data["handle"].(string)
+
+	dcResp := ic.send(Message{
+		Type: "pc:createDc", ID: ic.getID(), Handle: offerer,
+		Data: map[string]interface{}{"label": "test", "options": map[string]interface{}{}},
+	})
+	if dcResp.Type != "pc:createDc:ack" {
+		t.Fatalf("createDc: %s %v", dcResp.Type, dcResp.Data)
+	}
+	offererDcHandle = dcResp.Data["dc_handle"].(string)
+
+	offerResp := ic.send(Message{Type: "pc:offer", ID: ic.getID(), Handle: offerer, Data: map[string]interface{}{}})
+	offerSdp := offerResp.Data["sdp"].(string)
+
+	ic.send(Message{Type: "pc:setLocalDesc", ID: ic.getID(), Handle: offerer,
+		Data: map[string]interface{}{"sdp": offerSdp, "type": "offer"}})
+	ic.send(Message{Type: "pc:setRemoteDesc", ID: ic.getID(), Handle: answerer,
+		Data: map[string]interface{}{"sdp": offerSdp, "type": "offer"}})
+
+	answerResp := ic.send(Message{Type: "pc:answer", ID: ic.getID(), Handle: answerer, Data: map[string]interface{}{}})
+	answerSdp := answerResp.Data["sdp"].(string)
+
+	ic.send(Message{Type: "pc:setLocalDesc", ID: ic.getID(), Handle: answerer,
+		Data: map[string]interface{}{"sdp": answerSdp, "type": "answer"}})
+	ic.send(Message{Type: "pc:setRemoteDesc", ID: ic.getID(), Handle: offerer,
+		Data: map[string]interface{}{"sdp": answerSdp, "type": "answer"}})
+
+	time.Sleep(500 * time.Millisecond)
+
+	for _, e := range ic.getEvents() {
+		if e.Type != "event:iceCandidate" {
+			continue
+		}
+		candidate, _ := e.Data["candidate"].(string)
+		sdpMid, _ := e.Data["sdp_mid"].(string)
+		sdpMlineIndex := 0
+		if idx, ok := e.Data["sdp_mline_index"]; ok {
+			switch v := idx.(type) {
+			case int8:
+				sdpMlineIndex = int(v)
+			case int64:
+				sdpMlineIndex = int(v)
+			case uint64:
+				sdpMlineIndex = int(v)
+			}
+		}
+		target := answerer
+		if e.Handle == answerer {
+			target = offerer
+		}
+		ic.send(Message{
+			Type: "pc:addIce", ID: ic.getID(), Handle: target,
+			Data: map[string]interface{}{
+				"candidate": candidate, "sdp_mid": sdpMid, "sdp_mline_index": sdpMlineIndex,
+			},
+		})
+	}
+
+	// Wait for SCTP to establish
+	time.Sleep(2 * time.Second)
+
+	return offererDcHandle
+}
+
+func TestIntegration_BufferedAmountLow(t *testing.T) {
+	ic, cleanup := startIntegration(t)
+	defer cleanup()
+
+	offererDcHandle := setupConnectedDCPair(t, ic)
+
+	// Wait for the offerer's DC to open before interacting with it
+	_, opened := ic.waitForEvent("event:dataChannelOpen", offererDcHandle, 5*time.Second)
+	if !opened {
+		t.Fatal("event:dataChannelOpen not received for offerer DC")
+	}
+
+	ic.clearEvents()
+
+	// Set threshold = 1: event fires when the send buffer drains to 0 bytes
+	setResp := ic.send(Message{
+		Type: "dc:setBufferedAmountLowThreshold", ID: ic.getID(), Handle: offererDcHandle,
+		Data: map[string]interface{}{"threshold": int(1)},
+	})
+	if setResp.Type != "dc:setBufferedAmountLowThreshold:ack" {
+		t.Fatalf("setBufferedAmountLowThreshold failed: %s %v", setResp.Type, setResp.Data)
+	}
+
+	// Send data to push the buffer above the threshold, then let it drain
+	sendResp := ic.send(Message{
+		Type: "dc:send", ID: ic.getID(), Handle: offererDcHandle,
+		Data: map[string]interface{}{"data": "trigger buffered amount low"},
+	})
+	if sendResp.Type != "dc:send:ack" {
+		t.Fatalf("dc:send failed: %s %v", sendResp.Type, sendResp.Data)
+	}
+
+	// The buffer drains to 0 (< threshold of 1) once the data is transmitted,
+	// which fires event:bufferedAmountLow on the offerer's DC.
+	_, found := ic.waitForEvent("event:bufferedAmountLow", offererDcHandle, 5*time.Second)
+	if !found {
+		t.Error("event:bufferedAmountLow not received after buffer drain")
+	}
+}
+
 func TestIntegration_DisconnectDoesNotCrash(t *testing.T) {
 	ic, cleanup := startIntegration(t)
 

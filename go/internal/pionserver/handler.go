@@ -23,7 +23,7 @@ func NewHandler(registry *Registry, sendEvent func(Message)) *Handler {
 }
 
 // HandleMessage routes a message to the appropriate handler.
-func (h *Handler) HandleMessage(msg Message) Message {
+func (h *Handler) HandleMessage(msg *Message) Message {
 	switch msg.Type {
 	case "init":
 		return h.handleInit(msg)
@@ -54,13 +54,13 @@ func (h *Handler) HandleMessage(msg Message) Message {
 	}
 }
 
-func (h *Handler) handleInit(msg Message) Message {
+func (h *Handler) handleInit(msg *Message) Message {
 	return AckResponse("init", msg.ID, "", map[string]interface{}{
 		"version": "1.0.0",
 	})
 }
 
-func (h *Handler) handlePCCreate(msg Message) Message {
+func (h *Handler) handlePCCreate(msg *Message) Message {
 	config := webrtc.Configuration{}
 
 	if servers, ok := msg.Data["ice_servers"]; ok {
@@ -229,7 +229,7 @@ func (h *Handler) setupDCCallbacks(dc *webrtc.DataChannel, dcHandle string) {
 	})
 }
 
-func (h *Handler) lookupPC(msg Message) (*webrtc.PeerConnection, Message, bool) {
+func (h *Handler) lookupPC(msg *Message) (*webrtc.PeerConnection, Message, bool) {
 	if msg.Handle == "" {
 		return nil, ErrorResponse(msg.ID, "INVALID_REQUEST", "missing handle", false, ""), false
 	}
@@ -244,7 +244,7 @@ func (h *Handler) lookupPC(msg Message) (*webrtc.PeerConnection, Message, bool) 
 	return pc, Message{}, true
 }
 
-func (h *Handler) lookupDC(msg Message) (*webrtc.DataChannel, Message, bool) {
+func (h *Handler) lookupDC(msg *Message) (*webrtc.DataChannel, Message, bool) {
 	if msg.Handle == "" {
 		return nil, ErrorResponse(msg.ID, "INVALID_REQUEST", "missing handle", false, ""), false
 	}
@@ -259,7 +259,7 @@ func (h *Handler) lookupDC(msg Message) (*webrtc.DataChannel, Message, bool) {
 	return dc, Message{}, true
 }
 
-func (h *Handler) handlePCOffer(msg Message) Message {
+func (h *Handler) handlePCOffer(msg *Message) Message {
 	pc, errMsg, ok := h.lookupPC(msg)
 	if !ok {
 		return errMsg
@@ -275,7 +275,7 @@ func (h *Handler) handlePCOffer(msg Message) Message {
 	})
 }
 
-func (h *Handler) handlePCAnswer(msg Message) Message {
+func (h *Handler) handlePCAnswer(msg *Message) Message {
 	pc, errMsg, ok := h.lookupPC(msg)
 	if !ok {
 		return errMsg
@@ -291,7 +291,7 @@ func (h *Handler) handlePCAnswer(msg Message) Message {
 	})
 }
 
-func (h *Handler) handlePCSetLocalDesc(msg Message) Message {
+func (h *Handler) handlePCSetLocalDesc(msg *Message) Message {
 	pc, errMsg, ok := h.lookupPC(msg)
 	if !ok {
 		return errMsg
@@ -317,7 +317,7 @@ func (h *Handler) handlePCSetLocalDesc(msg Message) Message {
 	})
 }
 
-func (h *Handler) handlePCSetRemoteDesc(msg Message) Message {
+func (h *Handler) handlePCSetRemoteDesc(msg *Message) Message {
 	pc, errMsg, ok := h.lookupPC(msg)
 	if !ok {
 		return errMsg
@@ -343,7 +343,7 @@ func (h *Handler) handlePCSetRemoteDesc(msg Message) Message {
 	})
 }
 
-func (h *Handler) handlePCAddIce(msg Message) Message {
+func (h *Handler) handlePCAddIce(msg *Message) Message {
 	pc, errMsg, ok := h.lookupPC(msg)
 	if !ok {
 		return errMsg
@@ -373,7 +373,7 @@ func (h *Handler) handlePCAddIce(msg Message) Message {
 	return AckResponse("pc:addIce", msg.ID, msg.Handle, map[string]interface{}{})
 }
 
-func (h *Handler) handlePCClose(msg Message) Message {
+func (h *Handler) handlePCClose(msg *Message) Message {
 	pc, errMsg, ok := h.lookupPC(msg)
 	if !ok {
 		return errMsg
@@ -386,7 +386,7 @@ func (h *Handler) handlePCClose(msg Message) Message {
 	return AckResponse("pc:close", msg.ID, msg.Handle, map[string]interface{}{})
 }
 
-func (h *Handler) handlePCCreateDc(msg Message) Message {
+func (h *Handler) handlePCCreateDc(msg *Message) Message {
 	pc, errMsg, ok := h.lookupPC(msg)
 	if !ok {
 		return errMsg
@@ -425,7 +425,7 @@ func (h *Handler) handlePCCreateDc(msg Message) Message {
 	})
 }
 
-func (h *Handler) handleDCSend(msg Message) Message {
+func (h *Handler) handleDCSend(msg *Message) Message {
 	dc, errMsg, ok := h.lookupDC(msg)
 	if !ok {
 		return errMsg
@@ -457,7 +457,7 @@ func (h *Handler) handleDCSend(msg Message) Message {
 	})
 }
 
-func (h *Handler) handleDCClose(msg Message) Message {
+func (h *Handler) handleDCClose(msg *Message) Message {
 	dc, errMsg, ok := h.lookupDC(msg)
 	if !ok {
 		return errMsg
@@ -470,7 +470,7 @@ func (h *Handler) handleDCClose(msg Message) Message {
 	return AckResponse("dc:close", msg.ID, msg.Handle, map[string]interface{}{})
 }
 
-func (h *Handler) handleResourceDelete(msg Message) Message {
+func (h *Handler) handleResourceDelete(msg *Message) Message {
 	if msg.Handle == "" {
 		return ErrorResponse(msg.ID, "INVALID_REQUEST", "missing handle", false, "")
 	}

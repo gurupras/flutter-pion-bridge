@@ -18,6 +18,35 @@ const (
 	pongTimeout  = 30 * time.Second
 )
 
+// messagePool provides reusable Message structs to reduce allocations on the hot path.
+var messagePool = sync.Pool{
+	New: func() interface{} {
+		return &Message{
+			Data: make(map[string]interface{}, 8),
+		}
+	},
+}
+
+// getMessage retrieves a Message from the pool, or allocates a new one.
+func getMessage() *Message {
+	m := messagePool.Get().(*Message)
+	return m
+}
+
+// putMessage clears and returns a Message to the pool.
+// Callers must ensure the message is no longer referenced after calling this.
+func putMessage(m *Message) {
+	// Zero the message fields to avoid data leakage
+	m.Type = ""
+	m.ID = 0
+	m.Handle = ""
+	// Clear the data map (preserves underlying capacity for reuse)
+	for k := range m.Data {
+		delete(m.Data, k)
+	}
+	messagePool.Put(m)
+}
+
 // Server is the WebSocket server that handles PionBridge protocol messages.
 type Server struct {
 	registry *Registry
@@ -120,8 +149,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				}
 			}()
 
-			var msg Message
-			if err := msgpack.Unmarshal(data, &msg); err != nil {
+			msg := getMessage()
+			defer putMessage(msg)
+
+			if err := msgpack.Unmarshal(data, msg); err != nil {
 				errMsg := ErrorResponse(0, "INVALID_REQUEST", "invalid msgpack: "+err.Error(), false, "")
 				s.sendMessage(conn, errMsg)
 				return
@@ -132,7 +163,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				s.registry.Touch(msg.Handle)
 			}
 
-			response := handler.HandleMessage(msg)
+			response := handler.HandleMessage(msg) // msg is *Message from pool
 			if err := s.sendMessage(conn, response); err != nil {
 				log.Printf("Error sending response: %v", err)
 			}

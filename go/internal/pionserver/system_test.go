@@ -403,11 +403,11 @@ func TestIntegration_FullFlow(t *testing.T) {
 		}
 	}
 
-	// 11. Send binary message (base64) from offerer DC
+	// 11. Send binary message from offerer DC
 	ic.clearEvents()
 	sendBinaryResp := ic.send(Message{
 		Type: "dc:send", ID: ic.getID(), Handle: offererDcHandle,
-		Data: map[string]interface{}{"data": "AQID", "is_binary": true}, // base64 for [1,2,3]
+		Data: map[string]interface{}{"data": []byte{1, 2, 3}, "is_binary": true},
 	})
 	if sendBinaryResp.Type != "dc:send:ack" {
 		t.Fatalf("dc:send binary failed: %s %v", sendBinaryResp.Type, sendBinaryResp.Data)
@@ -417,6 +417,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	if !foundBinaryMsg {
 		t.Error("event:dataChannelMessage (binary) not received on answerer DC")
 	} else {
+		// The received event will have base64-encoded data in the response
 		if binaryMsgEvent.Data["data"] != "AQID" {
 			t.Errorf("expected base64 'AQID', got %v", binaryMsgEvent.Data["data"])
 		}

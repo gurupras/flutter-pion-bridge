@@ -45,7 +45,7 @@ func (th *testHarness) clearEvents() {
 // createPC is a helper that creates a PeerConnection via the handler.
 func (th *testHarness) createPC(t *testing.T) string {
 	t.Helper()
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:create",
 		ID:   1,
 		Data: map[string]interface{}{},
@@ -64,7 +64,7 @@ func (th *testHarness) createPCPair(t *testing.T) (offererHandle, answererHandle
 	answererHandle = th.createPC(t)
 
 	// Offerer creates offer
-	offerResp := th.handler.HandleMessage(Message{
+	offerResp := th.handler.HandleMessage(&Message{
 		Type:   "pc:offer",
 		ID:     2,
 		Handle: offererHandle,
@@ -76,7 +76,7 @@ func (th *testHarness) createPCPair(t *testing.T) (offererHandle, answererHandle
 	offerSdp := offerResp.Data["sdp"].(string)
 
 	// Offerer sets local desc
-	th.handler.HandleMessage(Message{
+	th.handler.HandleMessage(&Message{
 		Type:   "pc:setLocalDesc",
 		ID:     3,
 		Handle: offererHandle,
@@ -84,7 +84,7 @@ func (th *testHarness) createPCPair(t *testing.T) (offererHandle, answererHandle
 	})
 
 	// Answerer sets remote desc
-	th.handler.HandleMessage(Message{
+	th.handler.HandleMessage(&Message{
 		Type:   "pc:setRemoteDesc",
 		ID:     4,
 		Handle: answererHandle,
@@ -92,7 +92,7 @@ func (th *testHarness) createPCPair(t *testing.T) (offererHandle, answererHandle
 	})
 
 	// Answerer creates answer
-	answerResp := th.handler.HandleMessage(Message{
+	answerResp := th.handler.HandleMessage(&Message{
 		Type:   "pc:answer",
 		ID:     5,
 		Handle: answererHandle,
@@ -104,7 +104,7 @@ func (th *testHarness) createPCPair(t *testing.T) (offererHandle, answererHandle
 	answerSdp := answerResp.Data["sdp"].(string)
 
 	// Answerer sets local desc
-	th.handler.HandleMessage(Message{
+	th.handler.HandleMessage(&Message{
 		Type:   "pc:setLocalDesc",
 		ID:     6,
 		Handle: answererHandle,
@@ -112,7 +112,7 @@ func (th *testHarness) createPCPair(t *testing.T) (offererHandle, answererHandle
 	})
 
 	// Offerer sets remote desc
-	th.handler.HandleMessage(Message{
+	th.handler.HandleMessage(&Message{
 		Type:   "pc:setRemoteDesc",
 		ID:     7,
 		Handle: offererHandle,
@@ -126,7 +126,7 @@ func (th *testHarness) createPCPair(t *testing.T) (offererHandle, answererHandle
 
 func TestHandleInit(t *testing.T) {
 	th := newTestHarness()
-	resp := th.handler.HandleMessage(Message{Type: "init", ID: 1, Data: map[string]interface{}{}})
+	resp := th.handler.HandleMessage(&Message{Type: "init", ID: 1, Data: map[string]interface{}{}})
 
 	if resp.Type != "init:ack" {
 		t.Errorf("expected init:ack, got %s", resp.Type)
@@ -143,7 +143,7 @@ func TestHandleInit(t *testing.T) {
 
 func TestHandlePCCreate(t *testing.T) {
 	th := newTestHarness()
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:create",
 		ID:   2,
 		Data: map[string]interface{}{},
@@ -175,7 +175,7 @@ func TestHandlePCCreate(t *testing.T) {
 
 func TestHandlePCCreate_WithICEServers(t *testing.T) {
 	th := newTestHarness()
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:create",
 		ID:   2,
 		Data: map[string]interface{}{
@@ -205,7 +205,7 @@ func TestHandlePCOffer(t *testing.T) {
 	th := newTestHarness()
 	handle := th.createPC(t)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type:   "pc:offer",
 		ID:     3,
 		Handle: handle,
@@ -229,20 +229,20 @@ func TestHandlePCAnswer(t *testing.T) {
 	answererHandle := th.createPC(t)
 
 	// Create and set offer
-	offerResp := th.handler.HandleMessage(Message{
+	offerResp := th.handler.HandleMessage(&Message{
 		Type: "pc:offer", ID: 2, Handle: offererHandle,
 		Data: map[string]interface{}{"offer_options": map[string]interface{}{}},
 	})
 	offerSdp := offerResp.Data["sdp"].(string)
 
 	// Set remote desc on answerer
-	th.handler.HandleMessage(Message{
+	th.handler.HandleMessage(&Message{
 		Type: "pc:setRemoteDesc", ID: 3, Handle: answererHandle,
 		Data: map[string]interface{}{"sdp": offerSdp, "type": "offer"},
 	})
 
 	// Now answerer can create answer
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:answer", ID: 4, Handle: answererHandle,
 		Data: map[string]interface{}{"answer_options": map[string]interface{}{}},
 	})
@@ -263,13 +263,13 @@ func TestHandlePCSetLocalDesc(t *testing.T) {
 	handle := th.createPC(t)
 
 	// Create offer first
-	offerResp := th.handler.HandleMessage(Message{
+	offerResp := th.handler.HandleMessage(&Message{
 		Type: "pc:offer", ID: 2, Handle: handle,
 		Data: map[string]interface{}{"offer_options": map[string]interface{}{}},
 	})
 	sdp := offerResp.Data["sdp"].(string)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:setLocalDesc", ID: 3, Handle: handle,
 		Data: map[string]interface{}{"sdp": sdp, "type": "offer"},
 	})
@@ -286,7 +286,7 @@ func TestHandlePCSetLocalDesc_MissingFields(t *testing.T) {
 	th := newTestHarness()
 	handle := th.createPC(t)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:setLocalDesc", ID: 3, Handle: handle,
 		Data: map[string]interface{}{},
 	})
@@ -337,7 +337,7 @@ func TestHandlePCAddIce_Success(t *testing.T) {
 			if e.Handle == answerer {
 				target = offerer
 			}
-			resp := th.handler.HandleMessage(Message{
+			resp := th.handler.HandleMessage(&Message{
 				Type: "pc:addIce", ID: 100 + addedCount, Handle: target,
 				Data: map[string]interface{}{
 					"candidate":       candidate,
@@ -360,7 +360,7 @@ func TestHandlePCAddIce_MissingCandidate(t *testing.T) {
 	th := newTestHarness()
 	handle := th.createPC(t)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:addIce", ID: 3, Handle: handle,
 		Data: map[string]interface{}{},
 	})
@@ -379,7 +379,7 @@ func TestHandlePCClose(t *testing.T) {
 	th := newTestHarness()
 	handle := th.createPC(t)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:close", ID: 3, Handle: handle, Data: map[string]interface{}{},
 	})
 
@@ -400,7 +400,7 @@ func TestHandlePCCreateDc(t *testing.T) {
 	th := newTestHarness()
 	pcHandle := th.createPC(t)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:createDc", ID: 5, Handle: pcHandle,
 		Data: map[string]interface{}{
 			"label":   "chat",
@@ -433,7 +433,7 @@ func TestHandlePCCreateDc_MissingLabel(t *testing.T) {
 	th := newTestHarness()
 	pcHandle := th.createPC(t)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:createDc", ID: 5, Handle: pcHandle,
 		Data: map[string]interface{}{},
 	})
@@ -457,13 +457,13 @@ func TestHandleDCSend_InvalidBase64(t *testing.T) {
 	pcHandle := th.createPC(t)
 
 	// Create a DC
-	dcResp := th.handler.HandleMessage(Message{
+	dcResp := th.handler.HandleMessage(&Message{
 		Type: "pc:createDc", ID: 5, Handle: pcHandle,
 		Data: map[string]interface{}{"label": "test", "options": map[string]interface{}{}},
 	})
 	dcHandle := dcResp.Data["dc_handle"].(string)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "dc:send", ID: 6, Handle: dcHandle,
 		Data: map[string]interface{}{
 			"data":      "!!!not-base64!!!",
@@ -485,13 +485,13 @@ func TestHandleDCClose(t *testing.T) {
 	th := newTestHarness()
 	pcHandle := th.createPC(t)
 
-	dcResp := th.handler.HandleMessage(Message{
+	dcResp := th.handler.HandleMessage(&Message{
 		Type: "pc:createDc", ID: 5, Handle: pcHandle,
 		Data: map[string]interface{}{"label": "test", "options": map[string]interface{}{}},
 	})
 	dcHandle := dcResp.Data["dc_handle"].(string)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "dc:close", ID: 6, Handle: dcHandle, Data: map[string]interface{}{},
 	})
 
@@ -506,7 +506,7 @@ func TestHandleResourceDelete(t *testing.T) {
 	th := newTestHarness()
 	pcHandle := th.createPC(t)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "resource:delete", ID: 10, Handle: pcHandle, Data: map[string]interface{}{},
 	})
 
@@ -525,13 +525,13 @@ func TestHandleResourceDelete_CascadesDataChannels(t *testing.T) {
 	th := newTestHarness()
 	pcHandle := th.createPC(t)
 
-	dcResp := th.handler.HandleMessage(Message{
+	dcResp := th.handler.HandleMessage(&Message{
 		Type: "pc:createDc", ID: 5, Handle: pcHandle,
 		Data: map[string]interface{}{"label": "chat", "options": map[string]interface{}{}},
 	})
 	dcHandle := dcResp.Data["dc_handle"].(string)
 
-	th.handler.HandleMessage(Message{
+	th.handler.HandleMessage(&Message{
 		Type: "resource:delete", ID: 10, Handle: pcHandle, Data: map[string]interface{}{},
 	})
 
@@ -544,7 +544,7 @@ func TestHandleResourceDelete_CascadesDataChannels(t *testing.T) {
 
 func TestHandleUnknownType(t *testing.T) {
 	th := newTestHarness()
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "bogus:operation", ID: 99, Data: map[string]interface{}{},
 	})
 
@@ -561,13 +561,13 @@ func TestHandlePCOffer_WrongHandleType(t *testing.T) {
 	pcHandle := th.createPC(t)
 
 	// Create a DC so we have a non-PC handle
-	dcResp := th.handler.HandleMessage(Message{
+	dcResp := th.handler.HandleMessage(&Message{
 		Type: "pc:createDc", ID: 5, Handle: pcHandle,
 		Data: map[string]interface{}{"label": "test", "options": map[string]interface{}{}},
 	})
 	dcHandle := dcResp.Data["dc_handle"].(string)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:offer", ID: 6, Handle: dcHandle,
 		Data: map[string]interface{}{},
 	})
@@ -583,7 +583,7 @@ func TestHandlePCOffer_WrongHandleType(t *testing.T) {
 func TestHandlePCOffer_NonExistentHandle(t *testing.T) {
 	th := newTestHarness()
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:offer", ID: 6, Handle: "deadbeef12345678deadbeef12345678",
 		Data: map[string]interface{}{},
 	})
@@ -600,7 +600,7 @@ func TestHandleDCSend_OnPCHandle(t *testing.T) {
 	th := newTestHarness()
 	pcHandle := th.createPC(t)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "dc:send", ID: 6, Handle: pcHandle,
 		Data: map[string]interface{}{"data": "hello", "is_binary": false},
 	})
@@ -616,7 +616,7 @@ func TestHandleDCSend_OnPCHandle(t *testing.T) {
 func TestHandleResourceDelete_MissingHandle(t *testing.T) {
 	th := newTestHarness()
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "resource:delete", ID: 10, Handle: "", Data: map[string]interface{}{},
 	})
 
@@ -637,7 +637,7 @@ func (th *testHarness) createConnectedPCPair(t *testing.T) (offererHandle, answe
 	answererHandle = th.createPC(t)
 
 	// Create DC on offerer before offer so SDP has application media
-	dcResp := th.handler.HandleMessage(Message{
+	dcResp := th.handler.HandleMessage(&Message{
 		Type: "pc:createDc", ID: 10, Handle: offererHandle,
 		Data: map[string]interface{}{"label": "test", "options": map[string]interface{}{}},
 	})
@@ -647,39 +647,39 @@ func (th *testHarness) createConnectedPCPair(t *testing.T) (offererHandle, answe
 	offererDcHandle = dcResp.Data["dc_handle"].(string)
 
 	// Offerer creates offer
-	offerResp := th.handler.HandleMessage(Message{
+	offerResp := th.handler.HandleMessage(&Message{
 		Type: "pc:offer", ID: 11, Handle: offererHandle,
 		Data: map[string]interface{}{},
 	})
 	offerSdp := offerResp.Data["sdp"].(string)
 
 	// Offerer sets local desc
-	th.handler.HandleMessage(Message{
+	th.handler.HandleMessage(&Message{
 		Type: "pc:setLocalDesc", ID: 12, Handle: offererHandle,
 		Data: map[string]interface{}{"sdp": offerSdp, "type": "offer"},
 	})
 
 	// Answerer sets remote desc
-	th.handler.HandleMessage(Message{
+	th.handler.HandleMessage(&Message{
 		Type: "pc:setRemoteDesc", ID: 13, Handle: answererHandle,
 		Data: map[string]interface{}{"sdp": offerSdp, "type": "offer"},
 	})
 
 	// Answerer creates answer
-	answerResp := th.handler.HandleMessage(Message{
+	answerResp := th.handler.HandleMessage(&Message{
 		Type: "pc:answer", ID: 14, Handle: answererHandle,
 		Data: map[string]interface{}{},
 	})
 	answerSdp := answerResp.Data["sdp"].(string)
 
 	// Answerer sets local desc
-	th.handler.HandleMessage(Message{
+	th.handler.HandleMessage(&Message{
 		Type: "pc:setLocalDesc", ID: 15, Handle: answererHandle,
 		Data: map[string]interface{}{"sdp": answerSdp, "type": "answer"},
 	})
 
 	// Offerer sets remote desc
-	th.handler.HandleMessage(Message{
+	th.handler.HandleMessage(&Message{
 		Type: "pc:setRemoteDesc", ID: 16, Handle: offererHandle,
 		Data: map[string]interface{}{"sdp": answerSdp, "type": "answer"},
 	})
@@ -706,7 +706,7 @@ func (th *testHarness) createConnectedPCPair(t *testing.T) (offererHandle, answe
 			if e.Handle == answererHandle {
 				target = offererHandle
 			}
-			th.handler.HandleMessage(Message{
+			th.handler.HandleMessage(&Message{
 				Type: "pc:addIce", ID: 17, Handle: target,
 				Data: map[string]interface{}{
 					"candidate":       candidate,
@@ -729,7 +729,7 @@ func TestHandleDCSend_Text(t *testing.T) {
 	th := newTestHarness()
 	_, _, dcHandle := th.createConnectedPCPair(t)
 
-	resp := th.handler.HandleMessage(Message{
+	resp := th.handler.HandleMessage(&Message{
 		Type: "dc:send", ID: 50, Handle: dcHandle,
 		Data: map[string]interface{}{"data": "Hello, world!", "is_binary": false},
 	})
@@ -747,10 +747,10 @@ func TestHandleDCSend_Binary(t *testing.T) {
 	th := newTestHarness()
 	_, _, dcHandle := th.createConnectedPCPair(t)
 
-	// base64 of [1, 2, 3] = "AQID"
-	resp := th.handler.HandleMessage(Message{
+	// Send raw binary data (not base64-encoded)
+	resp := th.handler.HandleMessage(&Message{
 		Type: "dc:send", ID: 51, Handle: dcHandle,
-		Data: map[string]interface{}{"data": "AQID", "is_binary": true},
+		Data: map[string]interface{}{"data": []byte{1, 2, 3}, "is_binary": true},
 	})
 
 	if resp.Type != "dc:send:ack" {
@@ -769,7 +769,7 @@ func TestEventConnectionStateChange(t *testing.T) {
 	handle := th.createPC(t)
 
 	// Close the PC to trigger a state change event
-	th.handler.HandleMessage(Message{
+	th.handler.HandleMessage(&Message{
 		Type: "pc:close", ID: 3, Handle: handle, Data: map[string]interface{}{},
 	})
 

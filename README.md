@@ -48,22 +48,38 @@ export ANDROID_HOME=~/android-sdk-linux        # or wherever your SDK is
 export ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358
 ```
 
-### 3. Build the native bindings
+### 3. Build the native bindings (required before every Flutter build)
 
 ```bash
 ./scripts/build_android.sh
 ```
 
-This produces:
+This runs `gomobile bind` and unpacks the result into:
 - `android/libs/pionbridge-go.jar` — Java bindings
-- `android/src/main/jniLibs/<ABI>/libgojni.so` — native libraries for arm64-v8a, armeabi-v7a, x86_64
+- `android/src/main/jniLibs/<ABI>/libgojni.so` — native libs for arm64-v8a, armeabi-v7a, x86_64
 
-Re-run this script whenever Go source files change.
+Re-run whenever Go source files change. The Flutter build does **not** run this automatically.
 
-### 4. Run the example app
+### 4. Build the APK
 
 ```bash
-cd example && flutter run
+cd example
+
+# Debug APK (for development / flutter run)
+flutter build apk --debug
+
+# Release APK
+flutter build apk --release
+
+# Or just run directly on a connected device (builds debug APK implicitly)
+flutter run
+```
+
+The APK is output to `example/build/app/outputs/flutter-apk/`.
+
+To verify the native library was packaged correctly:
+```bash
+./scripts/check_apk.sh
 ```
 
 ## Building for iOS

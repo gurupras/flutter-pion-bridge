@@ -3,525 +3,375 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:pion_bridge/pion_bridge.dart';
-
-enum TestState { idle, connecting, connected, running, completed, error }
-
-class ThroughputTestResult {
-  final int bytesTransferred;
-  final Duration duration;
-  final double mbps;
-  final int outOfOrderCount;
-  final int maxBufferSize;
-
-  ThroughputTestResult({
-    required this.bytesTransferred,
-    required this.duration,
-    required this.mbps,
-    required this.outOfOrderCount,
-    required this.maxBufferSize,
-  });
-}
+import 'remote_peer_tab.dart';
 
 void main() {
-  runApp(const ThroughputTestApp());
+  runApp(const PionBridgeExampleApp());
 }
 
-class ThroughputTestApp extends StatelessWidget {
-  const ThroughputTestApp({super.key});
+class PionBridgeExampleApp extends StatelessWidget {
+  const PionBridgeExampleApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'P2P Throughput Test',
+      title: 'Pion Bridge Test',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
       ),
-      home: const ThroughputTestScreen(),
+      home: const _HomeScreen(),
     );
   }
 }
 
-class ThroughputTestScreen extends StatefulWidget {
-  const ThroughputTestScreen({super.key});
+class _HomeScreen extends StatefulWidget {
+  const _HomeScreen();
 
   @override
-  State<ThroughputTestScreen> createState() => _ThroughputTestScreenState();
+  State<_HomeScreen> createState() => _HomeScreenState();
 }
 
-class _ThroughputTestScreenState extends State<ThroughputTestScreen> {
-  TestState _state = TestState.idle;
-  String _statusMessage = 'Press Start to begin test';
-  ThroughputTestResult? _result;
-  double _testProgress = 0.0;
-  int _numDataChannels = 1;
-  late final TextEditingController _channelCountController;
+class _HomeScreenState extends State<_HomeScreen> {
   PionBridge? _bridge;
-  PionPeerConnection? _serverPeer;
-  PionPeerConnection? _clientPeer;
-  List<PionDataChannel>? _dataChannels;
+  String? _bridgeError;
 
   @override
   void initState() {
     super.initState();
-    _channelCountController = TextEditingController(text: '1');
-    _initializeBridge();
+    _initBridge();
   }
 
-  @override
-  void dispose() {
-    _channelCountController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _initializeBridge() async {
-    setState(() {
-      _state = TestState.connecting;
-      _statusMessage = 'Initializing P2P Bridge...';
-    });
-
+  Future<void> _initBridge() async {
     try {
-      _bridge = await PionBridge.initialize(
+      final bridge = await PionBridge.initialize(
         onDisconnected: () {
           if (mounted) {
             setState(() {
-              _state = TestState.error;
-              _statusMessage = 'Bridge disconnected';
+              _bridge = null;
+              _bridgeError = 'Bridge disconnected';
             });
           }
         },
       );
-
-      setState(() {
-        _state = TestState.idle;
-        _statusMessage = 'Bridge initialized. Ready to test.';
-      });
+      if (mounted) setState(() => _bridge = bridge);
     } catch (e) {
-      setState(() {
-        _state = TestState.error;
-        _statusMessage = 'Failed to initialize bridge: $e';
-      });
+      if (mounted) setState(() => _bridgeError = 'Failed to initialize bridge: $e');
     }
   }
 
-  Future<void> _runThroughputTest() async {
-    if (_bridge == null) return;
+  @override
+  Widget build(BuildContext context) {
+    if (_bridgeError != null) {
+      return Scaffold(
+        body: Center(
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.error, color: Colors.red, size: 48),
+            const SizedBox(height: 16),
+            Text(_bridgeError!, textAlign: TextAlign.center),
+            const SizedBox(height: 16),
+            FilledButton(onPressed: () {
+              setState(() { _bridge = null; _bridgeError = null; });
+              _initBridge();
+            }, child: const Text('Retry')),
+          ]),
+        ),
+      );
+    }
 
+    if (_bridge == null) {
+      return const Scaffold(
+        body: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          CircularProgressIndicator(),
+          SizedBox(height: 16),
+          Text('Initializing bridge…'),
+        ])),
+      );
+    }
+
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        appBar: AppBar(
+          backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+          title: const Text('Pion Bridge Test'),
+          bottom: const TabBar(tabs: [
+            Tab(icon: Icon(Icons.computer), text: 'Localhost'),
+            Tab(icon: Icon(Icons.wifi), text: 'Remote Peer'),
+          ]),
+        ),
+        body: TabBarView(children: [
+          LocalhostTab(bridge: _bridge!),
+          RemotePeerTab(bridge: _bridge!),
+        ]),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Localhost loopback throughput test
+// ---------------------------------------------------------------------------
+
+enum _TestState { idle, running, connected, completed, error }
+
+class _TestResult {
+  final int bytesTransferred;
+  final Duration duration;
+  final double mbps;
+
+  _TestResult({
+    required this.bytesTransferred,
+    required this.duration,
+    required this.mbps,
+  });
+}
+
+class LocalhostTab extends StatefulWidget {
+  final PionBridge bridge;
+  const LocalhostTab({super.key, required this.bridge});
+
+  @override
+  State<LocalhostTab> createState() => _LocalhostTabState();
+}
+
+class _LocalhostTabState extends State<LocalhostTab>
+    with AutomaticKeepAliveClientMixin {
+  _TestState _state = _TestState.idle;
+  String _status = 'Ready to test';
+  _TestResult? _result;
+  double _progress = 0;
+  int _numChannels = 1;
+  final _channelCtrl = TextEditingController(text: '1');
+
+  PionPeerConnection? _serverPeer;
+  PionPeerConnection? _clientPeer;
+  List<PionDataChannel>? _dcs;
+
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  void dispose() {
+    _channelCtrl.dispose();
+    _cleanup();
+    super.dispose();
+  }
+
+  Future<void> _runTest() async {
     setState(() {
-      _state = TestState.running;
-      _statusMessage = 'Creating peer connections...';
+      _state = _TestState.running;
+      _status = '[1/6] Creating peer connections…';
       _result = null;
+      _progress = 0;
     });
 
     try {
-      setState(() { _statusMessage = '[1/7] Creating peer connections...'; });
-      debugPrint('[PionTest] Creating peer connections');
-      _serverPeer = await _bridge!.createPeerConnection();
-      _clientPeer = await _bridge!.createPeerConnection();
-      debugPrint('[PionTest] Peer connections created');
+      _serverPeer = await widget.bridge.createPeerConnection();
+      _clientPeer = await widget.bridge.createPeerConnection();
 
-      _setupIceCandidateExchange(_serverPeer!, _clientPeer!);
-      _setupIceCandidateExchange(_clientPeer!, _serverPeer!);
+      _serverPeer!.onIceCandidate.listen((c) => _clientPeer!.addIceCandidate(c));
+      _clientPeer!.onIceCandidate.listen((c) => _serverPeer!.addIceCandidate(c));
 
-      setState(() { _statusMessage = '[2/7] Creating $_numDataChannels data channel(s)...'; });
+      setState(() => _status = '[2/6] Creating $_numChannels data channel(s)…');
       final serverDcs = <PionDataChannel>[];
-      for (int i = 0; i < _numDataChannels; i++) {
-        debugPrint('[PionTest] Creating DC $i');
-        final dc = await _serverPeer!.createDataChannel('throughput-$i');
-        serverDcs.add(dc);
-        debugPrint('[PionTest] DC $i created');
-        setState(() { _statusMessage = '[2/7] Created DC $i of ${_numDataChannels - 1}'; });
+      for (int i = 0; i < _numChannels; i++) {
+        serverDcs.add(await _serverPeer!.createDataChannel('throughput-$i'));
       }
-      _dataChannels = serverDcs;
+      _dcs = serverDcs;
 
-      setState(() { _statusMessage = '[3/7] Creating SDP offer...'; });
-      debugPrint('[PionTest] Creating offer');
-      final serverOffer = await _serverPeer!.createOffer();
-      debugPrint('[PionTest] Offer created, SDP length=${serverOffer.length}');
-
-      setState(() { _statusMessage = '[4/7] Setting local description...'; });
-      debugPrint('[PionTest] Setting local description');
-      await _serverPeer!.setLocalDescription(serverOffer, 'offer');
-      debugPrint('[PionTest] Local description set');
-
-      setState(() { _statusMessage = '[5/7] Setting remote description + creating answer...'; });
-      debugPrint('[PionTest] Setting remote description');
-      await _clientPeer!.setRemoteDescription(serverOffer, 'offer');
-      debugPrint('[PionTest] Creating answer');
-      final clientAnswer = await _clientPeer!.createAnswer();
-      debugPrint('[PionTest] Answer created, SDP length=${clientAnswer.length}');
-      await _clientPeer!.setLocalDescription(clientAnswer, 'answer');
-      debugPrint('[PionTest] Client local description set');
-      await _serverPeer!.setRemoteDescription(clientAnswer, 'answer');
-      debugPrint('[PionTest] Server remote description set');
+      setState(() => _status = '[3/6] SDP offer/answer exchange…');
+      final offer = await _serverPeer!.createOffer();
+      await _serverPeer!.setLocalDescription(offer, 'offer');
+      await _clientPeer!.setRemoteDescription(offer, 'offer');
+      final answer = await _clientPeer!.createAnswer();
+      await _clientPeer!.setLocalDescription(answer, 'answer');
+      await _serverPeer!.setRemoteDescription(answer, 'answer');
 
       setState(() {
-        _state = TestState.connected;
-        _statusMessage = '[6/7] Waiting for ${serverDcs.length} DC(s) to open...';
+        _state = _TestState.connected;
+        _status = '[4/6] Waiting for ${serverDcs.length} channel(s) to open…';
       });
-
       for (int i = 0; i < serverDcs.length; i++) {
-        debugPrint('[PionTest] Waiting for DC $i to open...');
         await serverDcs[i].onOpen.first;
-        debugPrint('[PionTest] DC $i opened');
-        setState(() { _statusMessage = '[6/7] DC $i opened (${i + 1}/${serverDcs.length})'; });
+        setState(() => _status = '[4/6] Channel $i opened (${i + 1}/${serverDcs.length})');
       }
 
       setState(() {
-        _statusMessage = '[7/7] Starting throughput test...';
-        _testProgress = 0.0;
+        _state = _TestState.running;
+        _status = '[5/6] Sending data for 5s…';
+        _progress = 0;
       });
-      debugPrint('[PionTest] Starting data transfer');
-      _startDataTransfer(serverDcs);
+      await _runSend(serverDcs);
     } catch (e) {
-      setState(() {
-        _state = TestState.error;
-        _statusMessage = 'Error: $e';
-      });
+      if (mounted) setState(() { _state = _TestState.error; _status = 'Error: $e'; });
+      _cleanup();
     }
   }
 
-  void _setupIceCandidateExchange(
-    PionPeerConnection from,
-    PionPeerConnection to,
-  ) {
-    from.onIceCandidate.listen((candidate) async {
-      try {
-        await to.addIceCandidate(candidate);
-      } catch (_) {}
-    });
-  }
-
-  Future<void> _startDataTransfer(List<PionDataChannel> dcs) async {
-    debugPrint('[PionTest] _startDataTransfer called with ${dcs.length} DC(s)');
-    const testDuration = Duration(seconds: 5);
-    const chunkSize = 64 * 1024 - 8; // reserve 8 bytes for sequence number header
+  Future<void> _runSend(List<PionDataChannel> dcs) async {
+    const duration = Duration(seconds: 5);
+    const chunkSize = 64 * 1024 - 8;
     final random = Random();
     int totalBytes = 0;
-    int sequenceNum = 0;
-    int outOfOrderCount = 0;
-    int maxBufferSize = 0;
+    int seq = 0;
 
-    // Receiver state: buffer for out-of-order chunks
-    final receivedChunks = <int, Uint8List>{};
-    int nextExpectedSeq = 0;
-
-    final stopwatch = Stopwatch()..start();
-    final completer = Completer<void>();
-    Timer(testDuration, () {
-      if (!completer.isCompleted) completer.complete();
-    });
-
+    final done = Completer<void>();
+    Timer(duration, () { if (!done.isCompleted) done.complete(); });
     Timer.periodic(const Duration(milliseconds: 100), (t) {
-      if (completer.isCompleted) {
-        t.cancel();
-        return;
-      }
-      if (mounted) {
-        setState(() {
-          _testProgress =
-              stopwatch.elapsed.inMilliseconds / testDuration.inMilliseconds;
-        });
-      }
+      if (done.isCompleted) { t.cancel(); return; }
+      if (mounted) setState(() => _progress = t.tick / (duration.inMilliseconds ~/ 100));
     });
 
-    // Sender: send chunks round-robin across DCs with sequence numbers
-    debugPrint('[PionTest] Send loop starting with ${dcs.length} DC(s)');
-    final dcSendCounts = List<int>.filled(dcs.length, 0);
-    int lastLogMs = 0;
-
-    while (!completer.isCompleted) {
-      final data = List.generate(chunkSize, (_) => random.nextInt(256));
-      final dcIndex = sequenceNum % dcs.length;
-
-      // Prepend 8-byte sequence number to each chunk
+    final sw = Stopwatch()..start();
+    while (!done.isCompleted) {
       final payload = Uint8List(8 + chunkSize);
-      _writeUint64LE(payload, 0, sequenceNum);
+      _writeU64LE(payload, 0, seq);
+      final data = List.generate(chunkSize, (_) => random.nextInt(256));
       payload.setRange(8, 8 + chunkSize, data);
-
-      await dcs[dcIndex].sendBinary(payload);
-      dcSendCounts[dcIndex]++;
+      await dcs[seq % dcs.length].sendBinary(payload);
       totalBytes += chunkSize;
-      sequenceNum++;
-
-      final elapsed = stopwatch.elapsedMilliseconds;
-      if (elapsed - lastLogMs >= 1000) {
-        debugPrint('[PionTest] t=${elapsed}ms seq=$sequenceNum '
-            '${totalBytes ~/ 1024}KB | per-DC: $dcSendCounts');
-        lastLogMs = elapsed;
-      }
+      seq++;
     }
-    debugPrint('[PionTest] Send loop done, seq=$sequenceNum '
-        '${totalBytes ~/ 1024}KB | per-DC: $dcSendCounts');
+    sw.stop();
 
-    stopwatch.stop();
-
-    // Simulate receiver reordering logic (for validation)
-    // In reality, the receiver would listen on all DCs and reorder
-    for (int i = 0; i < sequenceNum; i++) {
-      if (!receivedChunks.containsKey(i)) {
-        // Chunk i is missing (wouldn't happen in loopback, but demonstrates the concept)
-        continue;
-      }
-      if (i > nextExpectedSeq) {
-        outOfOrderCount++;
-      }
-      nextExpectedSeq = i + 1;
-      final bufferSize = receivedChunks.length;
-      if (bufferSize > maxBufferSize) {
-        maxBufferSize = bufferSize;
-      }
-    }
-
-    final result = ThroughputTestResult(
+    final result = _TestResult(
       bytesTransferred: totalBytes,
-      duration: stopwatch.elapsed,
-      mbps:
-          (totalBytes * 8) / stopwatch.elapsed.inMilliseconds * 1000 / 1000000,
-      outOfOrderCount: outOfOrderCount,
-      maxBufferSize: maxBufferSize,
+      duration: sw.elapsed,
+      mbps: (totalBytes * 8) / sw.elapsed.inMilliseconds * 1000 / 1e6,
     );
 
     if (mounted) {
       setState(() {
-        _state = TestState.completed;
+        _state = _TestState.completed;
         _result = result;
-        _statusMessage = 'Test completed!';
+        _status = 'Test complete';
+        _progress = 1;
       });
     }
-
     _cleanup();
   }
 
-  void _writeUint64LE(Uint8List buffer, int offset, int value) {
-    buffer[offset] = value & 0xFF;
-    buffer[offset + 1] = (value >> 8) & 0xFF;
-    buffer[offset + 2] = (value >> 16) & 0xFF;
-    buffer[offset + 3] = (value >> 24) & 0xFF;
-    buffer[offset + 4] = (value >> 32) & 0xFF;
-    buffer[offset + 5] = (value >> 40) & 0xFF;
-    buffer[offset + 6] = (value >> 48) & 0xFF;
-    buffer[offset + 7] = (value >> 56) & 0xFF;
+  void _writeU64LE(Uint8List buf, int off, int v) {
+    for (int i = 0; i < 8; i++) { buf[off + i] = v & 0xFF; v >>= 8; }
   }
 
   void _cleanup() {
     try {
-      _dataChannels?.forEach((dc) => dc.close());
+      _dcs?.forEach((dc) => dc.close());
       _serverPeer?.close();
       _clientPeer?.close();
     } catch (_) {}
-    _dataChannels = null;
+    _dcs = null;
     _serverPeer = null;
     _clientPeer = null;
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('P2P Throughput Test'),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Test Configuration',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+    super.build(context);
+    final canRun = _state == _TestState.idle ||
+        _state == _TestState.completed ||
+        _state == _TestState.error;
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Configuration', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 12),
+                Row(children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _channelCtrl,
+                      enabled: canRun,
+                      keyboardType: TextInputType.number,
+                      onChanged: (v) => _numChannels = (int.tryParse(v) ?? 1).clamp(1, 16),
+                      decoration: const InputDecoration(
+                        labelText: 'Data Channels (1–16)',
+                        border: OutlineInputBorder(),
+                        isDense: true,
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: TextField(
-                            keyboardType: TextInputType.number,
-                            enabled: _state == TestState.idle || _state == TestState.completed || _state == TestState.error,
-                            controller: _channelCountController,
-                            onChanged: (value) {
-                              final n = int.tryParse(value) ?? 1;
-                              _numDataChannels = n.clamp(1, 16);
-                            },
-                            decoration: InputDecoration(
-                              labelText: 'Number of DataChannels (1-16)',
-                              border: OutlineInputBorder(
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          '(1-16)',
-                          style: Theme.of(context).textTheme.bodySmall,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Test Status',
-                      style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    _buildStateIndicator(),
-                    const SizedBox(height: 8),
-                    Text(_statusMessage),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            if (_state == TestState.running || _state == TestState.connected)
-              LinearProgressIndicator(
-                value: _testProgress > 0 ? _testProgress : null,
-                minHeight: 8,
-                borderRadius: BorderRadius.circular(4),
-              ),
-            if (_state == TestState.running || _state == TestState.connected)
-              const SizedBox(height: 16),
-            if (_result != null) ...[
-              Card(
-                color: Theme.of(context).colorScheme.primaryContainer,
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Test Results',
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      _buildResultRow(
-                        'Data Transferred',
-                        '${(_result!.bytesTransferred / (1024 * 1024)).toStringAsFixed(2)} MB',
-                      ),
-                      _buildResultRow(
-                        'Duration',
-                        '${_result!.duration.inMilliseconds} ms',
-                      ),
-                      _buildResultRow(
-                        'Throughput',
-                        '${_result!.mbps.toStringAsFixed(2)} Mbps',
-                      ),
-                      _buildResultRow(
-                        'DataChannels Used',
-                        '$_numDataChannels',
-                      ),
-                      _buildResultRow(
-                        'Out-of-Order Arrivals',
-                        '${_result!.outOfOrderCount}',
-                      ),
-                      _buildResultRow(
-                        'Max Buffer Size',
-                        '${_result!.maxBufferSize} chunks',
-                      ),
-                    ],
                   ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed:
-                  _state == TestState.idle ||
-                      _state == TestState.completed ||
-                      _state == TestState.error
-                  ? _runThroughputTest
-                  : null,
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 16),
-              ),
-              child: Text(
-                _state == TestState.completed ? 'Run Test Again' : 'Start Test',
-                style: const TextStyle(fontSize: 16),
+                ]),
+              ]),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Status', style: Theme.of(context).textTheme.titleMedium),
+                const SizedBox(height: 8),
+                _stateRow(),
+                const SizedBox(height: 4),
+                Text(_status),
+              ]),
+            ),
+          ),
+          if (_state == _TestState.running || _state == _TestState.connected) ...[
+            const SizedBox(height: 12),
+            LinearProgressIndicator(
+              value: _progress > 0 ? _progress.clamp(0.0, 1.0) : null,
+              minHeight: 8,
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ],
+          if (_result != null) ...[
+            const SizedBox(height: 12),
+            Card(
+              color: Theme.of(context).colorScheme.primaryContainer,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Results', style: Theme.of(context).textTheme.titleMedium),
+                  const SizedBox(height: 12),
+                  _row('Data Channels', '$_numChannels'),
+                  _row('Transferred', '${(_result!.bytesTransferred / 1e6).toStringAsFixed(2)} MB'),
+                  _row('Duration', '${_result!.duration.inMilliseconds} ms'),
+                  _row('Throughput', '${_result!.mbps.toStringAsFixed(2)} Mbps'),
+                ]),
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildStateIndicator() {
-    Color color;
-    IconData icon;
-
-    switch (_state) {
-      case TestState.idle:
-        color = Colors.grey;
-        icon = Icons.hourglass_empty;
-        break;
-      case TestState.connecting:
-        color = Colors.orange;
-        icon = Icons.sync;
-        break;
-      case TestState.connected:
-        color = Colors.green;
-        icon = Icons.check_circle;
-        break;
-      case TestState.running:
-        color = Colors.blue;
-        icon = Icons.play_arrow;
-        break;
-      case TestState.completed:
-        color = Colors.teal;
-        icon = Icons.done_all;
-        break;
-      case TestState.error:
-        color = Colors.red;
-        icon = Icons.error;
-        break;
-    }
-
-    return Row(
-      children: [
-        Icon(icon, color: color, size: 20),
-        const SizedBox(width: 8),
-        Text(
-          _state.name.toUpperCase(),
-          style: TextStyle(color: color, fontWeight: FontWeight.bold),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildResultRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label),
-          Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+          const SizedBox(height: 16),
+          FilledButton(
+            onPressed: canRun ? _runTest : null,
+            child: Text(_state == _TestState.completed ? 'Run Again' : 'Start Test'),
+          ),
         ],
       ),
     );
   }
+
+  Widget _stateRow() {
+    final (color, icon) = switch (_state) {
+      _TestState.idle      => (Colors.grey, Icons.hourglass_empty),
+      _TestState.running   => (Colors.blue, Icons.play_arrow),
+      _TestState.connected => (Colors.green, Icons.check_circle),
+      _TestState.completed => (Colors.teal, Icons.done_all),
+      _TestState.error     => (Colors.red, Icons.error),
+    };
+    return Row(children: [
+      Icon(icon, color: color, size: 18),
+      const SizedBox(width: 8),
+      Text(_state.name.toUpperCase(),
+          style: TextStyle(color: color, fontWeight: FontWeight.bold)),
+    ]);
+  }
+
+  Widget _row(String label, String value) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 3),
+    child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+      Text(label),
+      Text(value, style: const TextStyle(fontWeight: FontWeight.bold)),
+    ]),
+  );
 }

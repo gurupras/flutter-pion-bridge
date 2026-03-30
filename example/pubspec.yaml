@@ -33,6 +33,8 @@ dependencies:
   pion_bridge:
     path: ../
   cupertino_icons: ^1.0.8
+  web_socket_channel: ^3.0.1
+  shared_preferences: ^2.3.3
 
 dev_dependencies:
   flutter_test:

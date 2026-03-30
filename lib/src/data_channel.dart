@@ -42,16 +42,12 @@ class PionDataChannel extends PionResource {
   Stream<void> get onClose => _onClose;
 
   Future<void> send(String data) async {
-    await request('dc:send', {
-      'data': data,
-      'is_binary': false,
-    });
+    await request('dc:send', {'data': data});
   }
 
   Future<void> sendBinary(List<int> data) async {
     await request('dc:send', {
       'data': data is Uint8List ? data : Uint8List.fromList(data),
-      'is_binary': true,
     });
   }
 }

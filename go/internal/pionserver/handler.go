@@ -431,25 +431,22 @@ func (h *Handler) handleDCSend(msg *Message) Message {
 		return errMsg
 	}
 
-	isBinary, _ := msg.Data["is_binary"].(bool)
-
 	var bytesSent int
-	if isBinary {
-		// Binary data arrives as []byte (msgpack bin type)
-		payload, ok := msg.Data["data"].([]byte)
-		if !ok {
-			return ErrorResponse(msg.ID, "INVALID_REQUEST", "binary data must be msgpack bin type", false, msg.Handle)
-		}
+	switch payload := msg.Data["data"].(type) {
+	case []byte:
+		// Binary data (msgpack bin type)
 		if err := dc.Send(payload); err != nil {
 			return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, msg.Handle)
 		}
 		bytesSent = len(payload)
-	} else {
-		dataStr, _ := msg.Data["data"].(string)
-		if err := dc.SendText(dataStr); err != nil {
+	case string:
+		// Text data (msgpack str type)
+		if err := dc.SendText(payload); err != nil {
 			return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, msg.Handle)
 		}
-		bytesSent = len(dataStr)
+		bytesSent = len(payload)
+	default:
+		return ErrorResponse(msg.ID, "INVALID_REQUEST", "data must be string or binary", false, msg.Handle)
 	}
 
 	return AckResponse("dc:send", msg.ID, msg.Handle, map[string]interface{}{

@@ -452,7 +452,7 @@ func TestHandlePCCreateDc_MissingLabel(t *testing.T) {
 // (SCTP not established). This is expected since we can't fully connect PCs in unit tests.
 // The integration test covers the full flow.
 
-func TestHandleDCSend_InvalidBase64(t *testing.T) {
+func TestHandleDCSend_InvalidDataType(t *testing.T) {
 	th := newTestHarness()
 	pcHandle := th.createPC(t)
 
@@ -463,11 +463,11 @@ func TestHandleDCSend_InvalidBase64(t *testing.T) {
 	})
 	dcHandle := dcResp.Data["dc_handle"].(string)
 
+	// Send data with invalid type (not string or []byte)
 	resp := th.handler.HandleMessage(&Message{
 		Type: "dc:send", ID: 6, Handle: dcHandle,
 		Data: map[string]interface{}{
-			"data":      "!!!not-base64!!!",
-			"is_binary": true,
+			"data": 12345, // invalid: int instead of string or []byte
 		},
 	})
 
@@ -747,10 +747,10 @@ func TestHandleDCSend_Binary(t *testing.T) {
 	th := newTestHarness()
 	_, _, dcHandle := th.createConnectedPCPair(t)
 
-	// Send raw binary data (not base64-encoded)
+	// Send raw binary data (msgpack bin type)
 	resp := th.handler.HandleMessage(&Message{
 		Type: "dc:send", ID: 51, Handle: dcHandle,
-		Data: map[string]interface{}{"data": []byte{1, 2, 3}, "is_binary": true},
+		Data: map[string]interface{}{"data": []byte{1, 2, 3}},
 	})
 
 	if resp.Type != "dc:send:ack" {

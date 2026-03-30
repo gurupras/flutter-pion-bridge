@@ -407,7 +407,7 @@ func TestIntegration_FullFlow(t *testing.T) {
 	ic.clearEvents()
 	sendBinaryResp := ic.send(Message{
 		Type: "dc:send", ID: ic.getID(), Handle: offererDcHandle,
-		Data: map[string]interface{}{"data": []byte{1, 2, 3}, "is_binary": true},
+		Data: map[string]interface{}{"data": []byte{1, 2, 3}},
 	})
 	if sendBinaryResp.Type != "dc:send:ack" {
 		t.Fatalf("dc:send binary failed: %s %v", sendBinaryResp.Type, sendBinaryResp.Data)

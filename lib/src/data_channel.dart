@@ -20,6 +20,8 @@ class PionDataChannel extends PionResource {
     _setupStreams();
   }
 
+  late Stream<void> _onBufferedAmountLow;
+
   void _setupStreams() {
     _onMessage = onEvent()
         .where((msg) => msg.type == 'event:dataChannelMessage')
@@ -35,11 +37,24 @@ class PionDataChannel extends PionResource {
     _onClose = onEvent()
         .where((msg) => msg.type == 'event:dataChannelClose')
         .map((_) => null);
+
+    _onBufferedAmountLow = onEvent()
+        .where((msg) => msg.type == 'event:bufferedAmountLow')
+        .map((_) => null);
   }
 
   Stream<DataChannelMessage> get onMessage => _onMessage;
   Stream<void> get onOpen => _onOpen;
   Stream<void> get onClose => _onClose;
+  Stream<void> get onBufferedAmountLow => _onBufferedAmountLow;
+
+  /// Configures the native DataChannel to fire [onBufferedAmountLow] whenever
+  /// its send-buffer drains below [threshold] bytes.  Call once after the
+  /// channel opens.  The high-water mark used for gating sends should be
+  /// larger than [threshold] so there is hysteresis.
+  Future<void> setBufferedAmountLowThreshold(int threshold) async {
+    await request('dc:setBufferedAmountLowThreshold', {'threshold': threshold});
+  }
 
   Future<void> send(String data) async {
     await request('dc:send', {'data': data});

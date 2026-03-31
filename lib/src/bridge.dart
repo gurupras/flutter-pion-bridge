@@ -10,6 +10,7 @@ import 'types.dart';
 class PionBridge {
   late ReconnectingWebSocketConnection _connection;
   late EventDispatcher _dispatcher;
+  PionSettingsEngine? _settingsEngine;
 
   /// Called each time the WebSocket successfully reconnects.
   /// All prior [PionPeerConnection] handles are invalid after reconnect;
@@ -29,6 +30,7 @@ class PionBridge {
   });
 
   static Future<PionBridge> initialize({
+    PionSettingsEngine? settingsEngine,
     void Function()? onReconnected,
     void Function()? onDisconnected,
     int? maxReconnectAttempts,
@@ -38,8 +40,19 @@ class PionBridge {
       onDisconnected: onDisconnected,
       maxReconnectAttempts: maxReconnectAttempts,
     );
+    pion._settingsEngine = settingsEngine;
     await pion._init();
     return pion;
+  }
+
+  Future<void> _sendInit() async {
+    final data = <String, dynamic>{};
+    final se = _settingsEngine;
+    if (se != null) {
+      final seMap = se.toMap();
+      if (seMap.isNotEmpty) data['settings_engine'] = seMap;
+    }
+    await _connection.request('init', null, data);
   }
 
   Future<void> _init() async {
@@ -51,12 +64,20 @@ class PionBridge {
     _dispatcher = EventDispatcher();
     _connection = ReconnectingWebSocketConnection(
       onMessage: _dispatcher.broadcast,
-      onReconnected: onReconnected,
+      onReconnected: () {
+        // Re-send init on reconnect so the new Go Handler gets the same
+        // SettingEngine config. Fire-and-forget; then notify the caller.
+        _sendInit().then(
+          (_) => onReconnected?.call(),
+          onError: (_) => onReconnected?.call(),
+        );
+      },
       onDisconnected: onDisconnected,
       maxAttempts: maxReconnectAttempts,
     );
 
     await _connection.connect('ws://127.0.0.1:$port/', token: token);
+    await _sendInit();
   }
 
   bool get isConnected => _connection.isConnected;

@@ -269,6 +269,109 @@ void main() {
     });
   });
 
+  group('PionSettingsEngine', () {
+    test('toMap returns empty map when all fields are null', () {
+      const se = PionSettingsEngine();
+      expect(se.toMap(), isEmpty);
+    });
+
+    test('toMap omits null fields', () {
+      const se = PionSettingsEngine(receiveMtu: 1400);
+      final map = se.toMap();
+      expect(map.containsKey('receive_mtu'), isTrue);
+      expect(map.length, 1);
+    });
+
+    test('toMap includes boolean flags', () {
+      const se = PionSettingsEngine(
+        disableActiveTcp: true,
+        disableCertificateFingerprintVerification: false,
+        disableCloseByDtls: true,
+        disableSrtcpReplayProtection: false,
+        disableSrtpReplayProtection: true,
+        enableDataChannelBlockWrite: true,
+        enableSctpZeroChecksum: true,
+      );
+      final map = se.toMap();
+      expect(map['disable_active_tcp'], isTrue);
+      expect(map['disable_certificate_fingerprint_verification'], isFalse);
+      expect(map['disable_close_by_dtls'], isTrue);
+      expect(map['disable_srtcp_replay_protection'], isFalse);
+      expect(map['disable_srtp_replay_protection'], isTrue);
+      expect(map['enable_data_channel_block_write'], isTrue);
+      expect(map['enable_sctp_zero_checksum'], isTrue);
+    });
+
+    test('toMap includes numeric settings', () {
+      const se = PionSettingsEngine(
+        sctpMaxReceiveBufferSize: 4194304,
+        sctpMaxMessageSize: 65536,
+        receiveMtu: 1300,
+        iceMaxBindingRequests: 7,
+        dtlsReplayProtectionWindow: 64,
+        srtcpReplayProtectionWindow: 64,
+        srtpReplayProtectionWindow: 64,
+        ephemeralUdpPortMin: 10000,
+        ephemeralUdpPortMax: 20000,
+      );
+      final map = se.toMap();
+      expect(map['sctp_max_receive_buffer_size'], 4194304);
+      expect(map['sctp_max_message_size'], 65536);
+      expect(map['receive_mtu'], 1300);
+      expect(map['ice_max_binding_requests'], 7);
+      expect(map['dtls_replay_protection_window'], 64);
+      expect(map['srtcp_replay_protection_window'], 64);
+      expect(map['srtp_replay_protection_window'], 64);
+      expect(map['ephemeral_udp_port_min'], 10000);
+      expect(map['ephemeral_udp_port_max'], 20000);
+    });
+
+    test('toMap includes duration settings', () {
+      const se = PionSettingsEngine(
+        iceDisconnectedTimeoutMs: 5000,
+        iceFailedTimeoutMs: 25000,
+        iceKeepaliveMs: 2000,
+        hostAcceptanceMinWaitMs: 500,
+        srflxAcceptanceMinWaitMs: 500,
+        prflxAcceptanceMinWaitMs: 500,
+        relayAcceptanceMinWaitMs: 500,
+        dtlsRetransmissionIntervalMs: 100,
+        stunGatherTimeoutMs: 3000,
+      );
+      final map = se.toMap();
+      expect(map['ice_disconnected_timeout_ms'], 5000);
+      expect(map['ice_failed_timeout_ms'], 25000);
+      expect(map['ice_keepalive_ms'], 2000);
+      expect(map['host_acceptance_min_wait_ms'], 500);
+      expect(map['srflx_acceptance_min_wait_ms'], 500);
+      expect(map['prflx_acceptance_min_wait_ms'], 500);
+      expect(map['relay_acceptance_min_wait_ms'], 500);
+      expect(map['dtls_retransmission_interval_ms'], 100);
+      expect(map['stun_gather_timeout_ms'], 3000);
+    });
+
+    test('toMap includes string settings', () {
+      const se = PionSettingsEngine(multicastDnsHostName: 'myhost.local');
+      final map = se.toMap();
+      expect(map['multicast_dns_host_name'], 'myhost.local');
+    });
+
+    test('toMap uses snake_case keys matching the Go wire protocol', () {
+      const se = PionSettingsEngine(
+        disableActiveTcp: true,
+        ephemeralUdpPortMin: 1024,
+        ephemeralUdpPortMax: 65535,
+      );
+      final map = se.toMap();
+      // Verify exact key names that the Go side expects
+      expect(map.containsKey('disable_active_tcp'), isTrue);
+      expect(map.containsKey('ephemeral_udp_port_min'), isTrue);
+      expect(map.containsKey('ephemeral_udp_port_max'), isTrue);
+      // Verify no camelCase keys leaked through
+      expect(map.containsKey('disableActiveTcp'), isFalse);
+    });
+  });
+
   group('IceServer', () {
     test('toMap includes urls', () {
       final server = IceServer(urls: ['stun:stun.l.google.com:19302']);

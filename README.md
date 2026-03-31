@@ -122,6 +122,86 @@ CocoaPods will pick up the xcframework automatically via the podspec.
 
 Hot restart reinitialises the Dart layer and calls `startServer` again. The plugin handles this by stopping any running server before starting a new one — hot restart works without manual intervention.
 
+## SettingEngine Configuration
+
+`PionBridge.initialize()` accepts an optional `settingsEngine` parameter that lets you tune the underlying pion `SettingEngine` before any peer connections are created. These settings apply globally — all `PionPeerConnection` instances in the session share the same configuration.
+
+```dart
+final bridge = await PionBridge.initialize(
+  settingsEngine: PionSettingsEngine(
+    // Increase SCTP receive buffer for high-throughput DataChannels
+    sctpMaxReceiveBufferSize: 4 * 1024 * 1024, // 4 MB
+
+    // Restrict ICE to a specific UDP port range (useful behind firewalls)
+    ephemeralUdpPortMin: 50000,
+    ephemeralUdpPortMax: 51000,
+
+    // Tune ICE failure detection
+    iceDisconnectedTimeoutMs: 5000,
+    iceFailedTimeoutMs: 25000,
+    iceKeepaliveMs: 2000,
+  ),
+);
+```
+
+All fields are optional — omit any you don't need.
+
+### Supported settings
+
+**Boolean flags**
+
+| Field | Pion method |
+|-------|------------|
+| `disableActiveTcp` | `DisableActiveTCP` |
+| `disableCertificateFingerprintVerification` | `DisableCertificateFingerprintVerification` |
+| `disableCloseByDtls` | `DisableCloseByDTLS` |
+| `disableSrtcpReplayProtection` | `DisableSRTCPReplayProtection` |
+| `disableSrtpReplayProtection` | `DisableSRTPReplayProtection` |
+| `enableDataChannelBlockWrite` | `EnableDataChannelBlockWrite` |
+| `enableSctpZeroChecksum` | `EnableSCTPZeroChecksum` |
+
+**Numeric**
+
+| Field | Pion method |
+|-------|------------|
+| `sctpMaxReceiveBufferSize` | `SetSCTPMaxReceiveBufferSize` |
+| `sctpMaxMessageSize` | `SetSCTPMaxMessageSize` |
+| `receiveMtu` | `SetReceiveMTU` |
+| `iceMaxBindingRequests` | `SetICEMaxBindingRequests` |
+| `dtlsReplayProtectionWindow` | `SetDTLSReplayProtectionWindow` |
+| `srtcpReplayProtectionWindow` | `SetSRTCPReplayProtectionWindow` |
+| `srtpReplayProtectionWindow` | `SetSRTPReplayProtectionWindow` |
+| `ephemeralUdpPortMin` + `ephemeralUdpPortMax` | `SetEphemeralUDPPortRange` |
+
+**Durations (milliseconds)**
+
+| Field | Pion method |
+|-------|------------|
+| `iceDisconnectedTimeoutMs` + `iceFailedTimeoutMs` + `iceKeepaliveMs` | `SetICETimeouts` |
+| `hostAcceptanceMinWaitMs` | `SetHostAcceptanceMinWait` |
+| `srflxAcceptanceMinWaitMs` | `SetSrflxAcceptanceMinWait` |
+| `prflxAcceptanceMinWaitMs` | `SetPrflxAcceptanceMinWait` |
+| `relayAcceptanceMinWaitMs` | `SetRelayAcceptanceMinWait` |
+| `dtlsRetransmissionIntervalMs` | `SetDTLSRetransmissionInterval` |
+| `stunGatherTimeoutMs` | `SetSTUNGatherTimeout` |
+
+**String**
+
+| Field | Pion method |
+|-------|------------|
+| `multicastDnsHostName` | `SetMulticastDNSHostName` |
+
+### Paired parameters
+
+Two settings require all values in the group to be provided together or not at all — a partial set is rejected with an error:
+
+- **UDP port range**: `ephemeralUdpPortMin` and `ephemeralUdpPortMax` must both be set.
+- **ICE timeouts**: `iceDisconnectedTimeoutMs`, `iceFailedTimeoutMs`, and `iceKeepaliveMs` must all be set together.
+
+### Limitations
+
+Function-typed settings (`SetInterfaceFilter`, `SetIPFilter`, `SetVNet`, etc.) cannot be serialised over the wire and are not supported. Use them by forking the Go server directly if needed.
+
 ## Backpressure Handling
 
 When sending large amounts of data over a DataChannel, the native send buffer can fill up faster than the remote peer can receive. To avoid dropping packets or blocking the sender, use the buffered amount low threshold to implement flow control:

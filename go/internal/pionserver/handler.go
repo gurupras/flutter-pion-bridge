@@ -12,6 +12,7 @@ import (
 type Handler struct {
 	registry  *Registry
 	sendEvent func(Message) // sends events back to the client
+	api       *webrtc.API  // built on init; defaults to the standard API
 }
 
 // NewHandler creates a new message handler.
@@ -19,6 +20,7 @@ func NewHandler(registry *Registry, sendEvent func(Message)) *Handler {
 	return &Handler{
 		registry:  registry,
 		sendEvent: sendEvent,
+		api:       webrtc.NewAPI(),
 	}
 }
 
@@ -57,6 +59,13 @@ func (h *Handler) HandleMessage(msg *Message) Message {
 }
 
 func (h *Handler) handleInit(msg *Message) Message {
+	se := webrtc.SettingEngine{}
+	if cfg, ok := msg.Data["settings_engine"].(map[string]interface{}); ok {
+		if err := applySettingsEngine(&se, cfg); err != nil {
+			return ErrorResponse(msg.ID, "INVALID_REQUEST", err.Error(), false, "")
+		}
+	}
+	h.api = webrtc.NewAPI(webrtc.WithSettingEngine(se))
 	return AckResponse("init", msg.ID, "", map[string]interface{}{
 		"version": "1.0.0",
 	})
@@ -116,7 +125,7 @@ func (h *Handler) handlePCCreate(msg *Message) Message {
 		}
 	}
 
-	pc, err := webrtc.NewPeerConnection(config)
+	pc, err := h.api.NewPeerConnection(config)
 	if err != nil {
 		return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, "")
 	}

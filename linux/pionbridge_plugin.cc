@@ -1,4 +1,4 @@
-#include "pionbridge_plugin.h"
+#include "include/pion_bridge/pionbridge_plugin.h"
 
 #include <flutter_linux/flutter_linux.h>
 #include <gtk/gtk.h>

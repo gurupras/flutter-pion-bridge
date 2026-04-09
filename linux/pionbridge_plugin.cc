@@ -3,6 +3,10 @@
 #include <flutter_linux/flutter_linux.h>
 #include <gtk/gtk.h>
 
+#include <fcntl.h>
+#include <signal.h>
+#include <unistd.h>
+
 #include <cstring>
 #include <string>
 #include <thread>

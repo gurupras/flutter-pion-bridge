@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 class IceServer {
   final List<String> urls;
@@ -31,12 +32,12 @@ class IceCandidate {
 }
 
 class DataChannelMessage {
-  final String data;
+  final Uint8List bytes;
   final bool isBinary;
 
-  DataChannelMessage({required this.data, required this.isBinary});
+  DataChannelMessage({required this.bytes, required this.isBinary});
 
-  List<int> get binaryData => base64Decode(data);
+  String get text => utf8.decode(bytes);
 }
 
 /// Configuration for the pion SettingEngine, sent in the [PionBridge.initialize]

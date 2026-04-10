@@ -1,4 +1,6 @@
+import 'dart:convert';
 import 'dart:typed_data';
+
 
 import 'event_dispatcher.dart';
 import 'resource.dart';
@@ -25,10 +27,21 @@ class PionDataChannel extends PionResource {
   void _setupStreams() {
     _onMessage = onEvent()
         .where((msg) => msg.type == 'event:dataChannelMessage')
-        .map((msg) => DataChannelMessage(
-              data: msg.data['data'] as String,
-              isBinary: msg.data['is_binary'] as bool? ?? false,
-            ));
+        .map((msg) {
+          final raw = msg.data['data'];
+          final bool isBinary = msg.data['is_binary'] as bool? ?? false;
+          final Uint8List bytes;
+          if (raw is Uint8List) {
+            bytes = raw;
+          } else if (raw is List<int>) {
+            bytes = Uint8List.fromList(raw);
+          } else if (raw is String) {
+            bytes = Uint8List.fromList(utf8.encode(raw));
+          } else {
+            bytes = Uint8List(0);
+          }
+          return DataChannelMessage(bytes: bytes, isBinary: isBinary);
+        });
 
     _onOpen = onEvent()
         .where((msg) => msg.type == 'event:dataChannelOpen')

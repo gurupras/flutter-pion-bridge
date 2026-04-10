@@ -1,6 +1,7 @@
 package pionserver
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"net/http"
@@ -417,9 +418,9 @@ func TestIntegration_FullFlow(t *testing.T) {
 	if !foundBinaryMsg {
 		t.Error("event:dataChannelMessage (binary) not received on answerer DC")
 	} else {
-		// The received event will have base64-encoded data in the response
-		if binaryMsgEvent.Data["data"] != "AQID" {
-			t.Errorf("expected base64 'AQID', got %v", binaryMsgEvent.Data["data"])
+		got, ok := binaryMsgEvent.Data["data"].([]byte)
+		if !ok || !bytes.Equal(got, []byte{1, 2, 3}) {
+			t.Errorf("expected []byte{1,2,3}, got %v", binaryMsgEvent.Data["data"])
 		}
 		if binaryMsgEvent.Data["is_binary"] != true {
 			t.Errorf("expected is_binary=true, got %v", binaryMsgEvent.Data["is_binary"])

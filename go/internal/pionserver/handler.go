@@ -1,7 +1,6 @@
 package pionserver
 
 import (
-	"encoding/base64"
 	"fmt"
 	"log"
 
@@ -233,7 +232,7 @@ func (h *Handler) setupDCCallbacks(dc *webrtc.DataChannel, dcHandle string) {
 			data["data"] = string(dcMsg.Data)
 			data["is_binary"] = false
 		} else {
-			data["data"] = base64.StdEncoding.EncodeToString(dcMsg.Data)
+			data["data"] = dcMsg.Data
 			data["is_binary"] = true
 		}
 		h.sendEvent(Event("event:dataChannelMessage", dcHandle, data))

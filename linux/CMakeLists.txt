@@ -24,7 +24,7 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 set(PIONBRIDGE_BINARY "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/pionbridge")
 if(EXISTS "${PIONBRIDGE_BINARY}")
   install(FILES "${PIONBRIDGE_BINARY}"
-          DESTINATION "${CMAKE_INSTALL_PREFIX}/lib"
+          DESTINATION "lib"
           PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
                       GROUP_READ GROUP_EXECUTE
                       WORLD_READ WORLD_EXECUTE)

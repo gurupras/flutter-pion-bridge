@@ -332,7 +332,7 @@ class _RemotePeerTabState extends State<RemotePeerTab>
 
     final msgSub = _dc!.onMessage.listen((msg) {
       if (!msg.isBinary) return;
-      final data = msg.binaryData;
+      final data = msg.bytes;
       if (data.isEmpty) {
         if (!done.isCompleted) done.complete(); // sentinel
         return;

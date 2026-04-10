@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pion_bridge/src/data_channel.dart';
 import 'package:pion_bridge/src/event_dispatcher.dart' as pion;
@@ -146,17 +149,22 @@ void main() {
   });
 
   group('DataChannelMessage', () {
-    test('text message has isBinary false', () {
-      final msg = DataChannelMessage(data: 'hello', isBinary: false);
+    test('text message has isBinary false and text getter works', () {
+      final msg = DataChannelMessage(
+        bytes: Uint8List.fromList(utf8.encode('hello')),
+        isBinary: false,
+      );
       expect(msg.isBinary, isFalse);
-      expect(msg.data, 'hello');
+      expect(msg.text, 'hello');
     });
 
-    test('binary message decodes base64', () {
-      // "AQID" is base64 for [1, 2, 3]
-      final msg = DataChannelMessage(data: 'AQID', isBinary: true);
+    test('binary message exposes raw bytes', () {
+      final msg = DataChannelMessage(
+        bytes: Uint8List.fromList([1, 2, 3]),
+        isBinary: true,
+      );
       expect(msg.isBinary, isTrue);
-      expect(msg.binaryData, [1, 2, 3]);
+      expect(msg.bytes, [1, 2, 3]);
     });
   });
 

@@ -339,7 +339,7 @@ void main() {
 
       final msg = await received.future
           .timeout(const Duration(seconds: 5));
-      expect(msg.data, 'Hello from offerer!');
+      expect(msg.text, 'Hello from offerer!');
       expect(msg.isBinary, isFalse);
     });
 
@@ -356,7 +356,7 @@ void main() {
       final msg = await received.future
           .timeout(const Duration(seconds: 5));
       expect(msg.isBinary, isTrue);
-      expect(msg.binaryData, [1, 2, 3]);
+      expect(msg.bytes, [1, 2, 3]);
     });
 
     test('DataChannelMessage.isBinary is correct for text vs binary',
@@ -763,7 +763,7 @@ void main() {
       final received = Completer<List<int>>();
       pair.answererDc.onMessage.listen((msg) {
         if (!received.isCompleted && msg.isBinary) {
-          received.complete(msg.binaryData);
+          received.complete(msg.bytes);
         }
       });
 
@@ -796,14 +796,14 @@ void main() {
       final responses = <int>[];
       pair.offererDc.onMessage.listen((msg) {
         if (msg.isBinary) {
-          responses.add(msg.binaryData.length);
+          responses.add(msg.bytes.length);
         }
       });
 
       pair.answererDc.onMessage.listen((msg) {
         // Echo back if binary
         if (msg.isBinary) {
-          unawaited(pair.answererDc.sendBinary(msg.binaryData));
+          unawaited(pair.answererDc.sendBinary(msg.bytes));
         }
       });
 

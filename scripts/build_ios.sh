@@ -26,6 +26,7 @@ if ! command -v gomobile &>/dev/null; then
 fi
 
 echo "Building iOS xcframework via gomobile bind …"
+cd "$GO_DIR"
 gomobile bind \
   -target ios \
   -o "$OUT_DIR/PionBridgeGo.xcframework" \

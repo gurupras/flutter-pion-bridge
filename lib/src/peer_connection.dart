@@ -5,6 +5,7 @@ import 'types.dart';
 import 'websocket_connection.dart';
 
 class PionPeerConnection extends PionResource {
+  final void Function(String)? onLog;
   late Stream<IceCandidate> _onIceCandidate;
   late Stream<void> _onIceGatheringComplete;
   late Stream<PionDataChannel> _onDataChannel;
@@ -13,8 +14,9 @@ class PionPeerConnection extends PionResource {
   PionPeerConnection(
     String handle,
     WebSocketConnection connection,
-    EventDispatcher dispatcher,
-  ) : super(handle, connection, dispatcher) {
+    EventDispatcher dispatcher, {
+    this.onLog,
+  }) : super(handle, connection, dispatcher) {
     _setupStreams();
   }
 
@@ -33,17 +35,25 @@ class PionPeerConnection extends PionResource {
 
     _onDataChannel = onEvent()
         .where((msg) => msg.type == 'event:dataChannel')
-        .map((msg) => PionDataChannel(
-              (msg.data['dc_handle'] as String?) ?? '',
-              connection,
-              dispatcher,
-              label: (msg.data['label'] as String?) ?? '',
-            ));
+        .map((msg) {
+          final dcLabel = (msg.data['label'] as String?) ?? '';
+          onLog?.call('[PC] incoming DC label=$dcLabel');
+          return PionDataChannel(
+            (msg.data['dc_handle'] as String?) ?? '',
+            connection,
+            dispatcher,
+            label: dcLabel,
+            onLog: onLog,
+          );
+        });
 
     _onConnectionStateChange = onEvent()
         .where((msg) => msg.type == 'event:connectionStateChange')
-        .map((msg) =>
-            ConnectionState.fromString((msg.data['state'] as String?) ?? 'new'));
+        .map((msg) {
+          final state = ConnectionState.fromString((msg.data['state'] as String?) ?? 'new');
+          onLog?.call('[PC] connectionState=$state');
+          return state;
+        });
   }
 
   Stream<IceCandidate> get onIceCandidate => _onIceCandidate;
@@ -103,11 +113,13 @@ class PionPeerConnection extends PionResource {
           'max_packet_lifetime_ms': maxPacketLifetimeMs,
       },
     });
+    onLog?.call('[PC] createDataChannel label=$label');
     return PionDataChannel(
       response['dc_handle'] as String,
       connection,
       dispatcher,
       label: label,
+      onLog: onLog,
     );
   }
 }

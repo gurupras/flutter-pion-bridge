@@ -9,6 +9,7 @@ import 'websocket_connection.dart';
 
 class PionDataChannel extends PionResource {
   final String label;
+  final void Function(String)? onLog;
   late Stream<DataChannelMessage> _onMessage;
   late Stream<void> _onOpen;
   late Stream<void> _onClose;
@@ -18,6 +19,7 @@ class PionDataChannel extends PionResource {
     WebSocketConnection connection,
     EventDispatcher dispatcher, {
     this.label = '',
+    this.onLog,
   }) : super(handle, connection, dispatcher) {
     _setupStreams();
   }
@@ -40,16 +42,23 @@ class PionDataChannel extends PionResource {
           } else {
             bytes = Uint8List(0);
           }
+          onLog?.call('[DC:$label] message ${bytes.length}B binary=$isBinary');
           return DataChannelMessage(bytes: bytes, isBinary: isBinary);
         });
 
     _onOpen = onEvent()
         .where((msg) => msg.type == 'event:dataChannelOpen')
-        .map((_) => null);
+        .map((_) {
+          onLog?.call('[DC:$label] opened');
+          return null;
+        });
 
     _onClose = onEvent()
         .where((msg) => msg.type == 'event:dataChannelClose')
-        .map((_) => null);
+        .map((_) {
+          onLog?.call('[DC:$label] closed');
+          return null;
+        });
 
     _onBufferedAmountLow = onEvent()
         .where((msg) => msg.type == 'event:bufferedAmountLow')

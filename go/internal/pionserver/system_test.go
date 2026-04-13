@@ -427,6 +427,30 @@ func TestIntegration_FullFlow(t *testing.T) {
 		}
 	}
 
+	// 11b. Send binary message from answerer DC → offerer (the untested direction)
+	ic.clearEvents()
+	sendBinaryFromAnswererResp := ic.send(Message{
+		Type: "dc:send", ID: ic.getID(), Handle: answererDcHandle,
+		Data: map[string]interface{}{"data": []byte{0x01, 0x02, 0x03}},
+	})
+	if sendBinaryFromAnswererResp.Type != "dc:send:ack" {
+		t.Fatalf("dc:send binary (answerer→offerer) failed: %s %v", sendBinaryFromAnswererResp.Type, sendBinaryFromAnswererResp.Data)
+	}
+
+	binaryFromAnswererEvent, foundBinaryFromAnswerer := ic.waitForEvent("event:dataChannelMessage", offererDcHandle, 3*time.Second)
+	if !foundBinaryFromAnswerer {
+		t.Error("event:dataChannelMessage (binary, answerer→offerer) not received on offerer DC")
+	} else {
+		got, ok := binaryFromAnswererEvent.Data["data"].([]byte)
+		if !ok || !bytes.Equal(got, []byte{0x01, 0x02, 0x03}) {
+			t.Errorf("answerer→offerer binary: expected []byte{0x01,0x02,0x03}, got type=%T val=%v",
+				binaryFromAnswererEvent.Data["data"], binaryFromAnswererEvent.Data["data"])
+		}
+		if binaryFromAnswererEvent.Data["is_binary"] != true {
+			t.Errorf("answerer→offerer binary: expected is_binary=true, got %v", binaryFromAnswererEvent.Data["is_binary"])
+		}
+	}
+
 	// 12. Close DataChannel, verify event:dataChannelClose
 	ic.clearEvents()
 	dcCloseResp := ic.send(Message{

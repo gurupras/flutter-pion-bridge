@@ -45,3 +45,39 @@ dependencies {
     // gomobile Java bindings — built by scripts/build_android.sh
     implementation files('libs/pionbridge-go.jar')
 }
+
+// ---------------------------------------------------------------------------
+// Auto-rebuild the gomobile AAR when Go source changes.
+//
+// Gradle's incremental task machinery compares inputs (go/ source tree) to
+// outputs (pionbridge-go.jar).  The task only re-runs when something in the
+// Go source actually changed, so normal Flutter runs add no overhead.
+// ---------------------------------------------------------------------------
+def goSrcDir    = file("${project.projectDir.parent}/go")
+def buildScript = file("${project.projectDir.parent}/scripts/build_android.sh")
+def outputJar   = file("${project.projectDir}/libs/pionbridge-go.jar")
+
+tasks.register('buildGoBridge', Exec) {
+    description = 'Rebuild the pion bridge Go native library via gomobile bind.'
+    group       = 'build'
+
+    inputs.dir(goSrcDir).withPathSensitivity(PathSensitivity.RELATIVE)
+    outputs.file(outputJar)
+
+    workingDir project.projectDir.parent
+    commandLine 'bash', 'scripts/build_android.sh'
+
+    doFirst {
+        def gomobile = ['which', 'gomobile'].execute()
+        gomobile.waitFor()
+        if (gomobile.exitValue() != 0) {
+            throw new GradleException(
+                "gomobile not found in PATH.\n" +
+                "Install it with:\n" +
+                "  go install golang.org/x/mobile/cmd/gomobile@latest && gomobile init"
+            )
+        }
+    }
+}
+
+preBuild.dependsOn 'buildGoBridge'

@@ -86,6 +86,7 @@ class PionBridge {
     List<IceServer>? iceServers,
     String bundlePolicy = 'balanced',
     String rtcpMuxPolicy = 'require',
+    void Function(String)? onLog,
   }) async {
     final response = await _connection.request('pc:create', null, {
       'ice_servers': iceServers?.map((s) => s.toMap()).toList() ?? [],
@@ -98,6 +99,7 @@ class PionBridge {
       // Pass inner connection; after reconnect callers must create new PCs.
       _connection.currentConnection!,
       _dispatcher,
+      onLog: onLog,
     );
   }
 

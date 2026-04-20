@@ -59,6 +59,11 @@ class PionSettingsEngine {
   final bool? enableDataChannelBlockWrite;
   final bool? enableSctpZeroChecksum;
 
+  /// Enable per-second pipeline tracing to stderr inside the Go bridge process.
+  /// Records frame rates, throughput, and dc.Send() latency per DataChannel.
+  /// Off by default — only enable for diagnostics; has measurable overhead.
+  final bool? enableTracing;
+
   // Numeric settings
   final int? sctpMaxReceiveBufferSize;
   final int? sctpMaxMessageSize;
@@ -107,6 +112,7 @@ class PionSettingsEngine {
     this.disableSrtpReplayProtection,
     this.enableDataChannelBlockWrite,
     this.enableSctpZeroChecksum,
+    this.enableTracing,
     this.sctpMaxReceiveBufferSize,
     this.sctpMaxMessageSize,
     this.sctpMinCwnd,
@@ -149,6 +155,7 @@ class PionSettingsEngine {
       map['enable_data_channel_block_write'] = enableDataChannelBlockWrite;
     }
     if (enableSctpZeroChecksum != null) map['enable_sctp_zero_checksum'] = enableSctpZeroChecksum;
+    if (enableTracing == true) map['enable_tracing'] = true;
     if (sctpMaxReceiveBufferSize != null) {
       map['sctp_max_receive_buffer_size'] = sctpMaxReceiveBufferSize;
     }

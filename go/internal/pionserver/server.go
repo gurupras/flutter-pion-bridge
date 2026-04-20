@@ -104,14 +104,21 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	writeCh := make(chan []byte, writeChanSize)
 	go func() {
 		for frame := range writeCh {
-			t0 := time.Now()
-			if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
-				log.Printf("WebSocket write error: %v", err)
-				return
+			if Trace.Enabled() {
+				t0 := time.Now()
+				if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+					log.Printf("WebSocket write error: %v", err)
+					return
+				}
+				atomic.AddInt64(&Trace.WriteFrames, 1)
+				atomic.AddInt64(&Trace.WriteBytes, int64(len(frame)))
+				atomic.AddInt64(&Trace.WriteNs, time.Since(t0).Nanoseconds())
+			} else {
+				if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+					log.Printf("WebSocket write error: %v", err)
+					return
+				}
 			}
-			atomic.AddInt64(&Trace.WriteFrames, 1)
-			atomic.AddInt64(&Trace.WriteBytes, int64(len(frame)))
-			atomic.AddInt64(&Trace.WriteNs, time.Since(t0).Nanoseconds())
 		}
 	}()
 
@@ -147,8 +154,10 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			close(writeCh)
 			return
 		}
-		atomic.AddInt64(&Trace.ReadFrames, 1)
-		atomic.AddInt64(&Trace.ReadBytes, int64(len(data)))
+		if Trace.Enabled() {
+			atomic.AddInt64(&Trace.ReadFrames, 1)
+			atomic.AddInt64(&Trace.ReadBytes, int64(len(data)))
+		}
 
 		if messageType != websocket.BinaryMessage {
 			errMsg := ErrorResponse(0, "INVALID_REQUEST", "expected binary message", false, "")

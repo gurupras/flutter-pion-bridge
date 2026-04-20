@@ -32,10 +32,6 @@ func main() {
 
 	port := listener.Addr().(*net.TCPAddr).Port
 
-	// Start pipeline tracing — prints one summary line per second to stderr.
-	// The label uses the port so sender/receiver processes are distinguishable.
-	pionserver.StartTracing(fmt.Sprintf(":%d", port))
-
 	// Output startup JSON to stdout
 	startup := map[string]interface{}{
 		"port":  port,

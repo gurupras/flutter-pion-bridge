@@ -12,7 +12,13 @@ import (
 // All fields are int64 so they can be updated with atomic.AddInt64.
 // The background printer goroutine samples deltas every second and writes
 // a summary line to stderr.
+//
+// Tracing is opt-in: counters and timers are only collected after
+// StartTracing is called (triggered by enable_tracing in PionSettingsEngine).
+// When disabled, Enabled() returns false and all hot-path sites skip their
+// instrumentation entirely — no atomics, no time.Now() calls.
 type PionTrace struct {
+	enabled int32 // 0 = off, 1 = on; set atomically by StartTracing
 	// WebSocket read loop (one frame at a time)
 	ReadFrames int64 // frames read from Dart
 	ReadBytes  int64 // raw bytes (before unmarshal)
@@ -36,6 +42,11 @@ type PionTrace struct {
 
 // Global trace instance.  Populated by handler/server; printed by StartTracing.
 var Trace = &PionTrace{dcIndex: make(map[string]int)}
+
+// Enabled returns true once StartTracing has been called.
+func (t *PionTrace) Enabled() bool {
+	return atomic.LoadInt32(&t.enabled) != 0
+}
 
 // DCIdx returns a stable 0-based index for dcHandle, allocating one on first use.
 func (t *PionTrace) DCIdx(dcHandle string) int {
@@ -80,9 +91,13 @@ func captureSnapshot(t *PionTrace) traceSnapshot {
 	return s
 }
 
-// StartTracing launches a background goroutine that prints a per-second
-// summary of all pipeline counters to stderr.
+// StartTracing enables hot-path instrumentation and launches a background
+// goroutine that prints a per-second summary of all pipeline counters to stderr.
+// Safe to call multiple times; only the first call takes effect.
 func StartTracing(label string) {
+	if !atomic.CompareAndSwapInt32(&Trace.enabled, 0, 1) {
+		return // already enabled
+	}
 	go func() {
 		ticker := time.NewTicker(time.Second)
 		defer ticker.Stop()

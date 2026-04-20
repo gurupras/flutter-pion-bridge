@@ -46,15 +46,23 @@ func (h *Handler) startDCSendGoroutine(dc *webrtc.DataChannel, dcHandle string) 
 
 	go func() {
 		for data := range ch {
-			t0 := time.Now()
-			if err := dc.Send(data); err != nil {
-				h.sendEvent(Event("event:dc:error", dcHandle, map[string]interface{}{
-					"error": err.Error(),
-				}))
+			if Trace.Enabled() {
+				t0 := time.Now()
+				if err := dc.Send(data); err != nil {
+					h.sendEvent(Event("event:dc:error", dcHandle, map[string]interface{}{
+						"error": err.Error(),
+					}))
+				}
+				atomic.AddInt64(&Trace.DCFrames[idx], 1)
+				atomic.AddInt64(&Trace.DCBytes[idx], int64(len(data)))
+				atomic.AddInt64(&Trace.DCNs[idx], time.Since(t0).Nanoseconds())
+			} else {
+				if err := dc.Send(data); err != nil {
+					h.sendEvent(Event("event:dc:error", dcHandle, map[string]interface{}{
+						"error": err.Error(),
+					}))
+				}
 			}
-			atomic.AddInt64(&Trace.DCFrames[idx], 1)
-			atomic.AddInt64(&Trace.DCBytes[idx], int64(len(data)))
-			atomic.AddInt64(&Trace.DCNs[idx], time.Since(t0).Nanoseconds())
 		}
 	}()
 }
@@ -112,6 +120,9 @@ func (h *Handler) handleInit(msg *Message) Message {
 	if cfg, ok := msg.Data["settings_engine"].(map[string]interface{}); ok {
 		if err := applySettingsEngine(&se, cfg); err != nil {
 			return ErrorResponse(msg.ID, "INVALID_REQUEST", err.Error(), false, "")
+		}
+		if v, _ := cfg["enable_tracing"].(bool); v {
+			StartTracing("bridge")
 		}
 	}
 	h.api = webrtc.NewAPI(webrtc.WithSettingEngine(se))
@@ -506,13 +517,14 @@ func (h *Handler) handleDCSend(msg *Message) Message {
 		// Copy before returning msg to the pool.
 		buf := make([]byte, len(payload))
 		copy(buf, payload)
-		// Record channel depth before push so we can see if sends are backing up.
-		h.sendChsMu.RLock()
-		idx := Trace.DCIdx(msg.Handle)
-		h.sendChsMu.RUnlock()
-		depth := int64(len(ch))
-		if cur := atomic.LoadInt64(&Trace.DCQDepth[idx]); depth > cur {
-			atomic.StoreInt64(&Trace.DCQDepth[idx], depth) // track peak per interval
+		if Trace.Enabled() {
+			h.sendChsMu.RLock()
+			idx := Trace.DCIdx(msg.Handle)
+			h.sendChsMu.RUnlock()
+			depth := int64(len(ch))
+			if cur := atomic.LoadInt64(&Trace.DCQDepth[idx]); depth > cur {
+				atomic.StoreInt64(&Trace.DCQDepth[idx], depth)
+			}
 		}
 		ch <- buf // block if channel full — correct back-pressure, no data loss
 	case string:

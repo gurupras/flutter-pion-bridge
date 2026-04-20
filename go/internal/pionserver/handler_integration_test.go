@@ -471,11 +471,22 @@ func TestHandleDCSend_InvalidDataType(t *testing.T) {
 		},
 	})
 
-	if resp.Type != "error" {
-		t.Fatalf("expected error, got %s", resp.Type)
+	if resp.Type != "" {
+		t.Fatalf("expected no response (fire-and-forget), got %s", resp.Type)
 	}
-	if resp.Data["code"] != "INVALID_REQUEST" {
-		t.Errorf("expected INVALID_REQUEST, got %v", resp.Data["code"])
+	events := th.getEvents()
+	var errEvent *Message
+	for i := range events {
+		if events[i].Type == "event:dc:error" && events[i].Handle == dcHandle {
+			errEvent = &events[i]
+			break
+		}
+	}
+	if errEvent == nil {
+		t.Fatal("expected event:dc:error, got none")
+	}
+	if errEvent.Data["error"] != "data must be string or binary" {
+		t.Errorf("unexpected error message: %v", errEvent.Data["error"])
 	}
 }
 
@@ -605,11 +616,19 @@ func TestHandleDCSend_OnPCHandle(t *testing.T) {
 		Data: map[string]interface{}{"data": "hello", "is_binary": false},
 	})
 
-	if resp.Type != "error" {
-		t.Fatalf("expected error, got %s", resp.Type)
+	if resp.Type != "" {
+		t.Fatalf("expected no response (fire-and-forget), got %s", resp.Type)
 	}
-	if resp.Data["code"] != "INVALID_REQUEST" {
-		t.Errorf("expected INVALID_REQUEST, got %v", resp.Data["code"])
+	events := th.getEvents()
+	var errEvent *Message
+	for i := range events {
+		if events[i].Type == "event:dc:error" && events[i].Handle == pcHandle {
+			errEvent = &events[i]
+			break
+		}
+	}
+	if errEvent == nil {
+		t.Fatal("expected event:dc:error, got none")
 	}
 }
 

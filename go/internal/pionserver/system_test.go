@@ -134,6 +134,17 @@ func (ic *integrationClient) send(msg Message) Message {
 	}
 }
 
+func (ic *integrationClient) sendFireAndForget(msg Message) {
+	ic.t.Helper()
+	data, err := msgpack.Marshal(msg)
+	if err != nil {
+		ic.t.Fatalf("marshal: %v", err)
+	}
+	if err := ic.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		ic.t.Fatalf("write: %v", err)
+	}
+}
+
 func (ic *integrationClient) getID() int {
 	id := ic.nextID
 	ic.nextID++
@@ -382,15 +393,10 @@ func TestIntegration_FullFlow(t *testing.T) {
 
 	// 10. Send text message from offerer DC, verify event:dataChannelMessage on answerer DC
 	ic.clearEvents()
-	sendTextResp := ic.send(Message{
-		Type: "dc:send", ID: ic.getID(), Handle: offererDcHandle,
+	ic.sendFireAndForget(Message{
+		Type: "dc:send", ID: 0, Handle: offererDcHandle,
 		Data: map[string]interface{}{"data": "Hello, peer!", "is_binary": false},
 	})
-	if sendTextResp.Type != "dc:send:ack" {
-		t.Fatalf("dc:send text failed: %s %v", sendTextResp.Type, sendTextResp.Data)
-	}
-	bytesSent, _ := sendTextResp.Data["bytes_sent"]
-	t.Logf("dc:send text bytes_sent=%v", bytesSent)
 
 	textMsgEvent, foundTextMsg := ic.waitForEvent("event:dataChannelMessage", answererDcHandle, 3*time.Second)
 	if !foundTextMsg {
@@ -406,13 +412,10 @@ func TestIntegration_FullFlow(t *testing.T) {
 
 	// 11. Send binary message from offerer DC
 	ic.clearEvents()
-	sendBinaryResp := ic.send(Message{
-		Type: "dc:send", ID: ic.getID(), Handle: offererDcHandle,
+	ic.sendFireAndForget(Message{
+		Type: "dc:send", ID: 0, Handle: offererDcHandle,
 		Data: map[string]interface{}{"data": []byte{1, 2, 3}},
 	})
-	if sendBinaryResp.Type != "dc:send:ack" {
-		t.Fatalf("dc:send binary failed: %s %v", sendBinaryResp.Type, sendBinaryResp.Data)
-	}
 
 	binaryMsgEvent, foundBinaryMsg := ic.waitForEvent("event:dataChannelMessage", answererDcHandle, 3*time.Second)
 	if !foundBinaryMsg {
@@ -429,13 +432,10 @@ func TestIntegration_FullFlow(t *testing.T) {
 
 	// 11b. Send binary message from answerer DC → offerer (the untested direction)
 	ic.clearEvents()
-	sendBinaryFromAnswererResp := ic.send(Message{
-		Type: "dc:send", ID: ic.getID(), Handle: answererDcHandle,
+	ic.sendFireAndForget(Message{
+		Type: "dc:send", ID: 0, Handle: answererDcHandle,
 		Data: map[string]interface{}{"data": []byte{0x01, 0x02, 0x03}},
 	})
-	if sendBinaryFromAnswererResp.Type != "dc:send:ack" {
-		t.Fatalf("dc:send binary (answerer→offerer) failed: %s %v", sendBinaryFromAnswererResp.Type, sendBinaryFromAnswererResp.Data)
-	}
 
 	binaryFromAnswererEvent, foundBinaryFromAnswerer := ic.waitForEvent("event:dataChannelMessage", offererDcHandle, 3*time.Second)
 	if !foundBinaryFromAnswerer {
@@ -598,13 +598,10 @@ func TestIntegration_BufferedAmountLow(t *testing.T) {
 	}
 
 	// Send data to push the buffer above the threshold, then let it drain
-	sendResp := ic.send(Message{
-		Type: "dc:send", ID: ic.getID(), Handle: offererDcHandle,
+	ic.sendFireAndForget(Message{
+		Type: "dc:send", ID: 0, Handle: offererDcHandle,
 		Data: map[string]interface{}{"data": "trigger buffered amount low"},
 	})
-	if sendResp.Type != "dc:send:ack" {
-		t.Fatalf("dc:send failed: %s %v", sendResp.Type, sendResp.Data)
-	}
 
 	// The buffer drains to 0 (< threshold of 1) once the data is transmitted,
 	// which fires event:bufferedAmountLow on the offerer's DC.

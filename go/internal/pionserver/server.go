@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -16,6 +17,11 @@ const (
 	// Keepalive intervals
 	pingInterval = 15 * time.Second
 	pongTimeout  = 30 * time.Second
+
+	// writeChanSize is the number of pre-serialised frames that can be queued
+	// before producers block.  Each frame is at most ~64 KB, so 8192 slots is
+	// up to ~512 MB of headroom — plenty for a multi-connection benchmark.
+	writeChanSize = 8192
 )
 
 // messagePool provides reusable Message structs to reduce allocations on the hot path.
@@ -52,9 +58,6 @@ type Server struct {
 	registry *Registry
 	token    string
 	upgrader websocket.Upgrader
-	// mu protects conn for concurrent event sends
-	mu   sync.Mutex
-	conn *websocket.Conn
 }
 
 // NewServer creates a new WebSocket server.
@@ -68,15 +71,16 @@ func NewServer(registry *Registry, token string) *Server {
 	}
 }
 
-// sendMessage sends a MessagePack-encoded message over the WebSocket.
-func (s *Server) sendMessage(conn *websocket.Conn, msg Message) error {
+// enqueueMessage serialises msg to msgpack and pushes the bytes onto writeCh.
+// Multiple goroutines may call this concurrently; the actual WebSocket write
+// is performed by the single writer goroutine, so no lock is needed here.
+func enqueueMessage(writeCh chan<- []byte, msg Message) error {
 	data, err := msgpack.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("msgpack marshal error: %w", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return conn.WriteMessage(websocket.BinaryMessage, data)
+	writeCh <- data // blocks only when the channel is full
+	return nil
 }
 
 // handleWebSocket is the HTTP handler for WebSocket upgrades.
@@ -95,9 +99,21 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	s.mu.Lock()
-	s.conn = conn
-	s.mu.Unlock()
+	// Dedicated writer goroutine — the only place conn.WriteMessage is called.
+	// All other goroutines push pre-serialised frames onto writeCh.
+	writeCh := make(chan []byte, writeChanSize)
+	go func() {
+		for frame := range writeCh {
+			t0 := time.Now()
+			if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
+				log.Printf("WebSocket write error: %v", err)
+				return
+			}
+			atomic.AddInt64(&Trace.WriteFrames, 1)
+			atomic.AddInt64(&Trace.WriteBytes, int64(len(frame)))
+			atomic.AddInt64(&Trace.WriteNs, time.Since(t0).Nanoseconds())
+		}
+	}()
 
 	// Set up ping-pong keepalive
 	conn.SetReadDeadline(time.Now().Add(pongTimeout))
@@ -106,23 +122,21 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
-	// Start ping ticker
+	// Start ping ticker — uses WriteControl which has its own internal lock in
+	// gorilla/websocket and does not need to go through writeCh.
 	pingTicker := time.NewTicker(pingInterval)
 	defer pingTicker.Stop()
 	go func() {
 		for range pingTicker.C {
-			s.mu.Lock()
-			err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second))
-			s.mu.Unlock()
-			if err != nil {
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
 				return
 			}
 		}
 	}()
 
 	handler := NewHandler(s.registry, func(event Message) {
-		if err := s.sendMessage(conn, event); err != nil {
-			log.Printf("Error sending event: %v", err)
+		if err := enqueueMessage(writeCh, event); err != nil {
+			log.Printf("Error enqueuing event: %v", err)
 		}
 	})
 
@@ -130,12 +144,15 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		messageType, data, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("WebSocket read error: %v", err)
+			close(writeCh)
 			return
 		}
+		atomic.AddInt64(&Trace.ReadFrames, 1)
+		atomic.AddInt64(&Trace.ReadBytes, int64(len(data)))
 
 		if messageType != websocket.BinaryMessage {
 			errMsg := ErrorResponse(0, "INVALID_REQUEST", "expected binary message", false, "")
-			s.sendMessage(conn, errMsg)
+			enqueueMessage(writeCh, errMsg)
 			continue
 		}
 
@@ -145,7 +162,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				if r := recover(); r != nil {
 					log.Printf("PANIC recovered: %v", r)
 					errMsg := ErrorResponse(0, "FATAL_PANIC", fmt.Sprintf("%v", r), true, "")
-					s.sendMessage(conn, errMsg)
+					enqueueMessage(writeCh, errMsg)
 				}
 			}()
 
@@ -154,7 +171,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			if err := msgpack.Unmarshal(data, msg); err != nil {
 				errMsg := ErrorResponse(0, "INVALID_REQUEST", "invalid msgpack: "+err.Error(), false, "")
-				s.sendMessage(conn, errMsg)
+				enqueueMessage(writeCh, errMsg)
 				return
 			}
 
@@ -163,9 +180,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				s.registry.Touch(msg.Handle)
 			}
 
-			response := handler.HandleMessage(msg) // msg is *Message from pool
-			if err := s.sendMessage(conn, response); err != nil {
-				log.Printf("Error sending response: %v", err)
+			response := handler.HandleMessage(msg)
+			if response.Type != "" {
+				if err := enqueueMessage(writeCh, response); err != nil {
+					log.Printf("Error enqueuing response: %v", err)
+				}
 			}
 		}()
 	}

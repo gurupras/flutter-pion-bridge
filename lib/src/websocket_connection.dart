@@ -91,6 +91,15 @@ class WebSocketConnection {
     }
   }
 
+  void send(String type, String? handle, Map<String, dynamic> data) {
+    if (!_connected) {
+      throw PionException('CONNECTION_LOST', 'WebSocket is not connected',
+          fatal: true);
+    }
+    final msg = WsMessage(type: type, id: 0, handle: handle, data: data);
+    _channel!.sink.add(msgpack.serialize(msg.toMap()));
+  }
+
   Future<Map<String, dynamic>> request(
     String type,
     String? handle,

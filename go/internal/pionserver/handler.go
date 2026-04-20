@@ -3,6 +3,9 @@ package pionserver
 import (
 	"fmt"
 	"log"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -12,6 +15,12 @@ type Handler struct {
 	registry  *Registry
 	sendEvent func(Message) // sends events back to the client
 	api       *webrtc.API  // built on init; defaults to the standard API
+
+	// Per-DataChannel send queues.  Each DC gets a dedicated goroutine so that
+	// dc:send calls to different connections execute concurrently instead of
+	// being serialized by the single WebSocket read loop.
+	sendChsMu sync.RWMutex
+	sendChs   map[string]chan []byte // dcHandle → send queue
 }
 
 // NewHandler creates a new message handler.
@@ -20,6 +29,47 @@ func NewHandler(registry *Registry, sendEvent func(Message)) *Handler {
 		registry:  registry,
 		sendEvent: sendEvent,
 		api:       webrtc.NewAPI(),
+		sendChs:   make(map[string]chan []byte),
+	}
+}
+
+// startDCSendGoroutine creates a buffered channel for dcHandle and starts a
+// dedicated goroutine that drains it by calling dc.Send().  Must be called
+// once per DataChannel after it has been registered.
+func (h *Handler) startDCSendGoroutine(dc *webrtc.DataChannel, dcHandle string) {
+	ch := make(chan []byte, 4096)
+	h.sendChsMu.Lock()
+	h.sendChs[dcHandle] = ch
+	h.sendChsMu.Unlock()
+
+	idx := Trace.DCIdx(dcHandle)
+
+	go func() {
+		for data := range ch {
+			t0 := time.Now()
+			if err := dc.Send(data); err != nil {
+				h.sendEvent(Event("event:dc:error", dcHandle, map[string]interface{}{
+					"error": err.Error(),
+				}))
+			}
+			atomic.AddInt64(&Trace.DCFrames[idx], 1)
+			atomic.AddInt64(&Trace.DCBytes[idx], int64(len(data)))
+			atomic.AddInt64(&Trace.DCNs[idx], time.Since(t0).Nanoseconds())
+		}
+	}()
+}
+
+// stopDCSendGoroutine closes the send channel for dcHandle, causing its
+// goroutine to exit cleanly.
+func (h *Handler) stopDCSendGoroutine(dcHandle string) {
+	h.sendChsMu.Lock()
+	ch, ok := h.sendChs[dcHandle]
+	if ok {
+		delete(h.sendChs, dcHandle)
+	}
+	h.sendChsMu.Unlock()
+	if ok {
+		close(ch)
 	}
 }
 
@@ -186,6 +236,7 @@ func (h *Handler) setupPCCallbacks(pc *webrtc.PeerConnection, handle string) {
 		}()
 		dcHandle := h.registry.RegisterChild(dc, handle)
 		h.setupDCCallbacks(dc, dcHandle)
+		h.startDCSendGoroutine(dc, dcHandle)
 		h.sendEvent(Event("event:dataChannel", handle, map[string]interface{}{
 			"type":      "dataChannel",
 			"dc_handle": dcHandle,
@@ -427,6 +478,7 @@ func (h *Handler) handlePCCreateDc(msg *Message) Message {
 
 	dcHandle := h.registry.RegisterChild(dc, msg.Handle)
 	h.setupDCCallbacks(dc, dcHandle)
+	h.startDCSendGoroutine(dc, dcHandle)
 
 	return AckResponse("pc:createDc", msg.ID, msg.Handle, map[string]interface{}{
 		"dc_handle": dcHandle,
@@ -436,32 +488,53 @@ func (h *Handler) handlePCCreateDc(msg *Message) Message {
 }
 
 func (h *Handler) handleDCSend(msg *Message) Message {
-	dc, errMsg, ok := h.lookupDC(msg)
+	// Route to the per-DC goroutine so that sends to different connections
+	// execute concurrently rather than being serialized by the read loop.
+	h.sendChsMu.RLock()
+	ch, ok := h.sendChs[msg.Handle]
+	h.sendChsMu.RUnlock()
+
 	if !ok {
-		return errMsg
+		h.sendEvent(Event("event:dc:error", msg.Handle, map[string]interface{}{
+			"error": "dc:send on unknown handle: " + msg.Handle,
+		}))
+		return Message{}
 	}
 
-	var bytesSent int
 	switch payload := msg.Data["data"].(type) {
 	case []byte:
-		// Binary data (msgpack bin type)
-		if err := dc.Send(payload); err != nil {
-			return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, msg.Handle)
+		// Copy before returning msg to the pool.
+		buf := make([]byte, len(payload))
+		copy(buf, payload)
+		// Record channel depth before push so we can see if sends are backing up.
+		h.sendChsMu.RLock()
+		idx := Trace.DCIdx(msg.Handle)
+		h.sendChsMu.RUnlock()
+		depth := int64(len(ch))
+		if cur := atomic.LoadInt64(&Trace.DCQDepth[idx]); depth > cur {
+			atomic.StoreInt64(&Trace.DCQDepth[idx], depth) // track peak per interval
 		}
-		bytesSent = len(payload)
+		ch <- buf // block if channel full — correct back-pressure, no data loss
 	case string:
-		// Text data (msgpack str type)
-		if err := dc.SendText(payload); err != nil {
-			return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, msg.Handle)
+		// Text sends are rare (control channel); handle inline via a separate path.
+		dc, errMsg, ok2 := h.lookupDC(msg)
+		if !ok2 {
+			h.sendEvent(Event("event:dc:error", msg.Handle, map[string]interface{}{
+				"error": errMsg.Data["message"],
+			}))
+			return Message{}
 		}
-		bytesSent = len(payload)
+		if err := dc.SendText(payload); err != nil {
+			h.sendEvent(Event("event:dc:error", msg.Handle, map[string]interface{}{
+				"error": err.Error(),
+			}))
+		}
 	default:
-		return ErrorResponse(msg.ID, "INVALID_REQUEST", "data must be string or binary", false, msg.Handle)
+		h.sendEvent(Event("event:dc:error", msg.Handle, map[string]interface{}{
+			"error": "data must be string or binary",
+		}))
 	}
-
-	return AckResponse("dc:send", msg.ID, msg.Handle, map[string]interface{}{
-		"bytes_sent": bytesSent,
-	})
+	return Message{}
 }
 
 func (h *Handler) handleDCSetBufferedAmountLowThreshold(msg *Message) Message {
@@ -489,6 +562,8 @@ func (h *Handler) handleDCClose(msg *Message) Message {
 	if !ok {
 		return errMsg
 	}
+
+	h.stopDCSendGoroutine(msg.Handle)
 
 	if err := dc.Close(); err != nil {
 		return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, msg.Handle)

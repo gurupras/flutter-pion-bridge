@@ -46,6 +46,8 @@ func TestApplySettingsEngine_NumericSettings(t *testing.T) {
 	}{
 		{"sctp_max_receive_buffer_size", int(4194304)},
 		{"sctp_max_message_size", int(65536)},
+		{"sctp_min_cwnd", int(4194304)},
+		{"sctp_cwnd_ca_step", int(1048576)},
 		{"receive_mtu", int(1400)},
 		{"ice_max_binding_requests", int(7)},
 		{"dtls_replay_protection_window", int(64)},
@@ -152,6 +154,7 @@ func TestApplySettingsEngine_DurationSettings(t *testing.T) {
 		"prflx_acceptance_min_wait_ms",
 		"relay_acceptance_min_wait_ms",
 		"dtls_retransmission_interval_ms",
+		"sctp_rto_max_ms",
 		"stun_gather_timeout_ms",
 	}
 	for _, key := range tests {

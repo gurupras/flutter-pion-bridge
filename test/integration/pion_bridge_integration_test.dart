@@ -4,15 +4,12 @@ library;
 import 'dart:async';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pion_bridge/src/data_channel.dart';
 import 'package:pion_bridge/src/exception.dart';
 import 'package:pion_bridge/src/reconnect.dart';
 import 'package:pion_bridge/src/types.dart';
 import 'package:pion_bridge/src/websocket_connection.dart';
-import 'package:pion_bridge/src/event_dispatcher.dart';
-import 'package:pion_bridge/src/ws_message.dart';
 
 import '../helpers/test_harness.dart';
 
@@ -335,7 +332,7 @@ void main() {
         if (!received.isCompleted) received.complete(msg);
       });
 
-      await pair.offererDc.send('Hello from offerer!');
+      pair.offererDc.send('Hello from offerer!');
 
       final msg = await received.future
           .timeout(const Duration(seconds: 5));
@@ -351,7 +348,7 @@ void main() {
         if (!received.isCompleted) received.complete(msg);
       });
 
-      await pair.offererDc.sendBinary([1, 2, 3]);
+      pair.offererDc.sendBinary([1, 2, 3]);
 
       final msg = await received.future
           .timeout(const Duration(seconds: 5));
@@ -366,9 +363,9 @@ void main() {
       final messages = <DataChannelMessage>[];
       pair.answererDc.onMessage.listen(messages.add);
 
-      await pair.offererDc.send('text');
+      pair.offererDc.send('text');
       await Future.delayed(const Duration(milliseconds: 500));
-      await pair.offererDc.sendBinary([42]);
+      pair.offererDc.sendBinary([42]);
       await Future.delayed(const Duration(seconds: 1));
 
       expect(messages.length, greaterThanOrEqualTo(2));
@@ -426,7 +423,7 @@ void main() {
 
       // Sending data pushes the buffer above the threshold; when the data is
       // transmitted (loopback), the buffer drains to 0 (< 1) and the event fires.
-      await pair.offererDc.send('trigger buffered amount low');
+      pair.offererDc.send('trigger buffered amount low');
 
       await fired.future.timeout(const Duration(seconds: 5));
     });
@@ -592,12 +589,12 @@ void main() {
 
       final received = <String>[];
       pair.answererDc.onMessage.listen((msg) {
-        received.add(msg.data as String);
+        received.add(msg.text);
       });
 
       // Send 500 sequential messages
       for (int i = 0; i < 500; i++) {
-        await pair.offererDc.send('msg-$i');
+        pair.offererDc.send('msg-$i');
       }
 
       // Wait for all 500 to arrive
@@ -617,15 +614,13 @@ void main() {
 
       final received = <String>[];
       pair.answererDc.onMessage.listen((msg) {
-        received.add(msg.data as String);
+        received.add(msg.text);
       });
 
-      // Send 100 messages concurrently without awaiting each
-      final futures = <Future<void>>[];
+      // Send 100 messages without awaiting each
       for (int i = 0; i < 100; i++) {
-        futures.add(pair.offererDc.send('concurrent-$i'));
+        pair.offererDc.send('concurrent-$i');
       }
-      await Future.wait(futures);
 
       // Wait for all to arrive
       await Future.delayed(const Duration(seconds: 3));
@@ -698,14 +693,14 @@ void main() {
       final messagesB = <String>[];
       final messagesC = <String>[];
 
-      answererDcs['dc-a']?.onMessage.listen((msg) => messagesA.add(msg.data));
-      answererDcs['dc-b']?.onMessage.listen((msg) => messagesB.add(msg.data));
-      answererDcs['dc-c']?.onMessage.listen((msg) => messagesC.add(msg.data));
+      answererDcs['dc-a']?.onMessage.listen((msg) => messagesA.add(msg.text));
+      answererDcs['dc-b']?.onMessage.listen((msg) => messagesB.add(msg.text));
+      answererDcs['dc-c']?.onMessage.listen((msg) => messagesC.add(msg.text));
 
       // Send distinct payloads on each offerer DC
-      await offererDcA.send('hello-a');
-      await offererDcB.send('hello-b');
-      await offererDcC.send('hello-c');
+      offererDcA.send('hello-a');
+      offererDcB.send('hello-b');
+      offererDcC.send('hello-c');
 
       await Future.delayed(const Duration(seconds: 2));
 
@@ -773,7 +768,7 @@ void main() {
         (index) => index % 256,
       );
 
-      await pair.offererDc.sendBinary(payload);
+      pair.offererDc.sendBinary(payload);
 
       final result = await received.future.timeout(
         const Duration(seconds: 15),
@@ -803,14 +798,14 @@ void main() {
       pair.answererDc.onMessage.listen((msg) {
         // Echo back if binary
         if (msg.isBinary) {
-          unawaited(pair.answererDc.sendBinary(msg.bytes));
+          pair.answererDc.sendBinary(msg.bytes);
         }
       });
 
       // Send 30 KB binary message 10 times (well under 64KB limit)
       final payload = List<int>.generate(30 * 1024, (i) => i % 256);
       for (int i = 0; i < 10; i++) {
-        await pair.offererDc.sendBinary(payload);
+        pair.offererDc.sendBinary(payload);
       }
 
       // Wait for echoes

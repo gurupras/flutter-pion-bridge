@@ -25,6 +25,7 @@ class PionDataChannel extends PionResource {
   }
 
   late Stream<void> _onBufferedAmountLow;
+  late Stream<String> _onError;
 
   void _setupStreams() {
     _onMessage = onEvent()
@@ -63,12 +64,17 @@ class PionDataChannel extends PionResource {
     _onBufferedAmountLow = onEvent()
         .where((msg) => msg.type == 'event:bufferedAmountLow')
         .map((_) => null);
+
+    _onError = onEvent()
+        .where((msg) => msg.type == 'event:dc:error')
+        .map((msg) => msg.data['error'] as String);
   }
 
   Stream<DataChannelMessage> get onMessage => _onMessage;
   Stream<void> get onOpen => _onOpen;
   Stream<void> get onClose => _onClose;
   Stream<void> get onBufferedAmountLow => _onBufferedAmountLow;
+  Stream<String> get onError => _onError;
 
   /// Configures the native DataChannel to fire [onBufferedAmountLow] whenever
   /// its send-buffer drains below [threshold] bytes.  Call once after the
@@ -78,12 +84,12 @@ class PionDataChannel extends PionResource {
     await request('dc:setBufferedAmountLowThreshold', {'threshold': threshold});
   }
 
-  Future<void> send(String data) async {
-    await request('dc:send', {'data': data});
+  void send(String data) {
+    connection.send('dc:send', handle, {'data': data});
   }
 
-  Future<void> sendBinary(List<int> data) async {
-    await request('dc:send', {
+  void sendBinary(List<int> data) {
+    connection.send('dc:send', handle, {
       'data': data is Uint8List ? data : Uint8List.fromList(data),
     });
   }

@@ -25,6 +25,8 @@ import (
 //	Numeric:
 //	  sctp_max_receive_buffer_size (int) → SetSCTPMaxReceiveBufferSize
 //	  sctp_max_message_size (int)        → SetSCTPMaxMessageSize
+//	  sctp_min_cwnd (int)                → SetSCTPMinCwnd
+//	  sctp_cwnd_ca_step (int)            → SetSCTPCwndCAStep
 //	  receive_mtu (int)                  → SetReceiveMTU
 //	  ice_max_binding_requests (int)     → SetICEMaxBindingRequests
 //	  dtls_replay_protection_window (int)  → SetDTLSReplayProtectionWindow
@@ -39,6 +41,7 @@ import (
 //	  prflx_acceptance_min_wait_ms  → SetPrflxAcceptanceMinWait
 //	  relay_acceptance_min_wait_ms  → SetRelayAcceptanceMinWait
 //	  dtls_retransmission_interval_ms → SetDTLSRetransmissionInterval
+//	  sctp_rto_max_ms               → SetSCTPRTOMax
 //	  stun_gather_timeout_ms        → SetSTUNGatherTimeout
 //
 //	String:
@@ -73,6 +76,12 @@ func applySettingsEngine(se *webrtc.SettingEngine, cfg map[string]interface{}) e
 	}
 	if v, ok := toInt(cfg["sctp_max_message_size"]); ok {
 		se.SetSCTPMaxMessageSize(uint32(v))
+	}
+	if v, ok := toInt(cfg["sctp_min_cwnd"]); ok {
+		se.SetSCTPMinCwnd(uint32(v))
+	}
+	if v, ok := toInt(cfg["sctp_cwnd_ca_step"]); ok {
+		se.SetSCTPCwndCAStep(uint32(v))
 	}
 	if v, ok := toInt(cfg["receive_mtu"]); ok {
 		se.SetReceiveMTU(uint(v))
@@ -133,6 +142,9 @@ func applySettingsEngine(se *webrtc.SettingEngine, cfg map[string]interface{}) e
 	}
 	if v, ok := toInt(cfg["dtls_retransmission_interval_ms"]); ok {
 		se.SetDTLSRetransmissionInterval(time.Duration(v) * time.Millisecond)
+	}
+	if v, ok := toInt(cfg["sctp_rto_max_ms"]); ok {
+		se.SetSCTPRTOMax(time.Duration(v) * time.Millisecond)
 	}
 	if v, ok := toInt(cfg["stun_gather_timeout_ms"]); ok {
 		se.SetSTUNGatherTimeout(time.Duration(v) * time.Millisecond)

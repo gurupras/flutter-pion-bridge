@@ -62,6 +62,8 @@ class PionSettingsEngine {
   // Numeric settings
   final int? sctpMaxReceiveBufferSize;
   final int? sctpMaxMessageSize;
+  final int? sctpMinCwnd;
+  final int? sctpCwndCaStep;
   final int? receiveMtu;
   final int? iceMaxBindingRequests;
   final int? dtlsReplayProtectionWindow;
@@ -73,6 +75,8 @@ class PionSettingsEngine {
 
   /// Must be provided together with [ephemeralUdpPortMin].
   final int? ephemeralUdpPortMax;
+
+  final int? sctpRtoMaxMs;
 
   // Duration settings (milliseconds)
 
@@ -105,6 +109,8 @@ class PionSettingsEngine {
     this.enableSctpZeroChecksum,
     this.sctpMaxReceiveBufferSize,
     this.sctpMaxMessageSize,
+    this.sctpMinCwnd,
+    this.sctpCwndCaStep,
     this.receiveMtu,
     this.iceMaxBindingRequests,
     this.dtlsReplayProtectionWindow,
@@ -115,6 +121,7 @@ class PionSettingsEngine {
     this.iceDisconnectedTimeoutMs,
     this.iceFailedTimeoutMs,
     this.iceKeepaliveMs,
+    this.sctpRtoMaxMs,
     this.hostAcceptanceMinWaitMs,
     this.srflxAcceptanceMinWaitMs,
     this.prflxAcceptanceMinWaitMs,
@@ -146,6 +153,8 @@ class PionSettingsEngine {
       map['sctp_max_receive_buffer_size'] = sctpMaxReceiveBufferSize;
     }
     if (sctpMaxMessageSize != null) map['sctp_max_message_size'] = sctpMaxMessageSize;
+    if (sctpMinCwnd != null) map['sctp_min_cwnd'] = sctpMinCwnd;
+    if (sctpCwndCaStep != null) map['sctp_cwnd_ca_step'] = sctpCwndCaStep;
     if (receiveMtu != null) map['receive_mtu'] = receiveMtu;
     if (iceMaxBindingRequests != null) map['ice_max_binding_requests'] = iceMaxBindingRequests;
     if (dtlsReplayProtectionWindow != null) {
@@ -164,6 +173,7 @@ class PionSettingsEngine {
     }
     if (iceFailedTimeoutMs != null) map['ice_failed_timeout_ms'] = iceFailedTimeoutMs;
     if (iceKeepaliveMs != null) map['ice_keepalive_ms'] = iceKeepaliveMs;
+    if (sctpRtoMaxMs != null) map['sctp_rto_max_ms'] = sctpRtoMaxMs;
     if (hostAcceptanceMinWaitMs != null) map['host_acceptance_min_wait_ms'] = hostAcceptanceMinWaitMs;
     if (srflxAcceptanceMinWaitMs != null) {
       map['srflx_acceptance_min_wait_ms'] = srflxAcceptanceMinWaitMs;

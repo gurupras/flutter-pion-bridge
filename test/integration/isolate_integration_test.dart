@@ -159,7 +159,7 @@ void main() {
 
       final receivedCompleter = Completer<String>();
       offererDc.onMessage.listen((msg) {
-        if (!receivedCompleter.isCompleted) receivedCompleter.complete(msg.data);
+        if (!receivedCompleter.isCompleted) receivedCompleter.complete(msg.text);
       });
 
       final dcOpenCompleter = Completer<void>();
@@ -526,10 +526,11 @@ Future<void> _test4SenderMain(SendPort coordinator) async {
 
   final conn = WebSocketConnection(onMessage: (_) {});
   await conn.connect('ws://127.0.0.1:$portNum/', token: tokenStr);
-  await conn.request('dc:send', dcHandle, <String, dynamic>{
+  conn.send('dc:send', dcHandle, <String, dynamic>{
     'data': 'hello from isolate',
     'is_binary': false,
   });
+  await Future.delayed(const Duration(milliseconds: 200));
   await conn.close();
   myPort.close();
 
@@ -574,7 +575,7 @@ Future<void> _offererIsolateMain(SendPort coordinator) async {
   });
 
   dc.onMessage.listen((msg) {
-    if (!messageCompleter.isCompleted) messageCompleter.complete(msg.data);
+    if (!messageCompleter.isCompleted) messageCompleter.complete(msg.text);
   });
 
   final offer = await offerer.createOffer();
@@ -676,10 +677,11 @@ Future<void> _answererIsolateMain(SendPort coordinator) async {
   // Wait for coordinator's 'send' signal.
   await messages.moveNext();
   if (messages.current == 'send') {
-    await conn.request('dc:send', dcHandle, <String, dynamic>{
+    conn.send('dc:send', dcHandle, <String, dynamic>{
       'data': 'hello from answerer isolate',
       'is_binary': false,
     });
+    await Future.delayed(const Duration(milliseconds: 200));
   }
 
   await messages.moveNext(); // 'done'

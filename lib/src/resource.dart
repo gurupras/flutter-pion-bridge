@@ -21,7 +21,13 @@ abstract class PionResource {
   }
 
   Future<void> close() async {
-    await request('resource:delete', {});
+    // Unsubscribe from the event dispatcher first so that any deferred events
+    // pion emits for this handle (e.g. ICE candidates fired by a sibling
+    // connection closing) are silently dropped rather than routed to a
+    // StreamController that is about to be torn down.  The resource:delete RPC
+    // uses a request-id Completer, not the dispatcher, so its response is
+    // still delivered correctly.
     dispatcher.unsubscribe(handle);
+    await request('resource:delete', {}).catchError((_) {});
   }
 }

@@ -7,6 +7,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/webrtc/v4 v4.2.11
 	github.com/vmihailenco/msgpack/v5 v5.4.1
+	golang.org/x/mobile v0.0.0-20260410095206-2cfb76559b7b
 )
 
 require (
@@ -28,9 +29,12 @@ require (
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/crypto v0.50.0 // indirect
+	golang.org/x/mod v0.35.0 // indirect
 	golang.org/x/net v0.53.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/time v0.10.0 // indirect
+	golang.org/x/tools v0.44.0 // indirect
 )
 
 replace github.com/pion/sctp v1.9.4 => ./pion-sctp-patched

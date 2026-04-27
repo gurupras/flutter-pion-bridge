@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pion_bridge/src/bridge.dart';
 import 'package:pion_bridge/src/data_channel.dart';
 import 'package:pion_bridge/src/event_dispatcher.dart' as pion;
 import 'package:pion_bridge/src/exception.dart';
@@ -377,6 +378,46 @@ void main() {
       expect(map.containsKey('ephemeral_udp_port_max'), isTrue);
       // Verify no camelCase keys leaked through
       expect(map.containsKey('disableActiveTcp'), isFalse);
+    });
+  });
+
+  group('PionServerEndpoint', () {
+    test('toMap exposes port and token', () {
+      const endpoint = PionServerEndpoint(port: 51812, token: 'tok-123');
+      final map = endpoint.toMap();
+      expect(map['port'], 51812);
+      expect(map['token'], 'tok-123');
+    });
+
+    test('fromMap accepts the toMap output (round-trip)', () {
+      const original = PionServerEndpoint(port: 7777, token: 'abc');
+      final restored = PionServerEndpoint.fromMap(original.toMap());
+      expect(restored.port, original.port);
+      expect(restored.token, original.token);
+    });
+
+    test('fromMap accepts a Map<dynamic, dynamic> as delivered by SendPort',
+        () {
+      // Maps that cross isolate boundaries via SendPort.send arrive typed as
+      // Map<dynamic, dynamic>; fromMap must accept that without a cast error.
+      final Map<dynamic, dynamic> wireMap = {'port': 9090, 'token': 'xyz'};
+      final endpoint = PionServerEndpoint.fromMap(wireMap);
+      expect(endpoint.port, 9090);
+      expect(endpoint.token, 'xyz');
+    });
+
+    test('fromMap throws when port is missing', () {
+      expect(
+        () => PionServerEndpoint.fromMap(<dynamic, dynamic>{'token': 'x'}),
+        throwsA(isA<TypeError>()),
+      );
+    });
+
+    test('fromMap throws when token is missing', () {
+      expect(
+        () => PionServerEndpoint.fromMap(<dynamic, dynamic>{'port': 1}),
+        throwsA(isA<TypeError>()),
+      );
     });
   });
 

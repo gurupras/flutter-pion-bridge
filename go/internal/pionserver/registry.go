@@ -20,6 +20,10 @@ type Registry struct {
 	parent map[string]string
 	// children tracks DataChannels owned by a PeerConnection (pc_handle -> []dc_handle)
 	children map[string][]string
+	// dcSendChs holds the per-DataChannel send queue.  Stored globally (not
+	// per-Handler) so dc:send works regardless of which WebSocket connection
+	// issues the call — the registry, not the Handler, owns the DC's lifetime.
+	dcSendChs map[string]chan []byte
 }
 
 // NewRegistry creates an empty registry.
@@ -29,7 +33,49 @@ func NewRegistry() *Registry {
 		lastSeen:  make(map[string]time.Time),
 		parent:    make(map[string]string),
 		children:  make(map[string][]string),
+		dcSendChs: make(map[string]chan []byte),
 	}
+}
+
+// RegisterDCSendCh stores the send queue for a DataChannel handle.
+// Returns false if a queue is already registered (caller must not start two
+// goroutines for the same DC).
+func (r *Registry) RegisterDCSendCh(handle string, ch chan []byte) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.dcSendChs[handle]; exists {
+		return false
+	}
+	r.dcSendChs[handle] = ch
+	return true
+}
+
+// LookupDCSendCh returns the send queue for a DataChannel handle, or false if
+// none is registered.
+func (r *Registry) LookupDCSendCh(handle string) (chan []byte, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ch, ok := r.dcSendChs[handle]
+	return ch, ok
+}
+
+// removeDCSendChLocked removes and returns the send queue for a DataChannel.
+// Caller must hold r.mu and is responsible for closing the returned channel.
+func (r *Registry) removeDCSendChLocked(handle string) (chan []byte, bool) {
+	ch, ok := r.dcSendChs[handle]
+	if ok {
+		delete(r.dcSendChs, handle)
+	}
+	return ch, ok
+}
+
+// RemoveDCSendCh removes and returns the send queue for a DataChannel.
+// Caller is responsible for closing the returned channel after removal so the
+// goroutine exits cleanly.
+func (r *Registry) RemoveDCSendCh(handle string) (chan []byte, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.removeDCSendChLocked(handle)
 }
 
 // generateHandle creates a UUID v4 hex string (32 chars, no hyphens).
@@ -99,6 +145,13 @@ func (r *Registry) deleteLocked(handle string) error {
 			r.deleteLocked(kid)
 		}
 		delete(r.children, handle)
+	}
+
+	// Drain the per-DC send queue if one was registered.  Closing the channel
+	// causes the dedicated send goroutine started by startDCSendGoroutine to
+	// exit cleanly.
+	if ch, ok := r.removeDCSendChLocked(handle); ok {
+		close(ch)
 	}
 
 	// Close the resource (best-effort; log errors but don't fail deletion)

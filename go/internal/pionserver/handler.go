@@ -3,7 +3,6 @@ package pionserver
 import (
 	"fmt"
 	"log"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -14,13 +13,7 @@ import (
 type Handler struct {
 	registry  *Registry
 	sendEvent func(Message) // sends events back to the client
-	api       *webrtc.API  // built on init; defaults to the standard API
-
-	// Per-DataChannel send queues.  Each DC gets a dedicated goroutine so that
-	// dc:send calls to different connections execute concurrently instead of
-	// being serialized by the single WebSocket read loop.
-	sendChsMu sync.RWMutex
-	sendChs   map[string]chan []byte // dcHandle → send queue
+	api       *webrtc.API   // built on init; defaults to the standard API
 }
 
 // NewHandler creates a new message handler.
@@ -29,27 +22,40 @@ func NewHandler(registry *Registry, sendEvent func(Message)) *Handler {
 		registry:  registry,
 		sendEvent: sendEvent,
 		api:       webrtc.NewAPI(),
-		sendChs:   make(map[string]chan []byte),
 	}
 }
 
-// startDCSendGoroutine creates a buffered channel for dcHandle and starts a
-// dedicated goroutine that drains it by calling dc.Send().  Must be called
-// once per DataChannel after it has been registered.
+// startDCSendGoroutine creates a buffered channel for dcHandle, registers it
+// in the global registry, and starts a dedicated goroutine that drains it by
+// calling dc.Send().  Storing the channel on the registry (rather than on the
+// Handler) means dc:send works from any WebSocket connection, not just the
+// one that created the DataChannel — which is essential for cross-isolate use
+// where the creating connection may already be closed by the time another
+// isolate sends on the DC.
+//
+// The goroutine reports send errors via the sendEvent closure that was passed
+// in when the DataChannel was originally created, so callbacks continue to
+// flow to the original creator's connection.  If that connection has been
+// closed, sendEvent will be a no-op.
 func (h *Handler) startDCSendGoroutine(dc *webrtc.DataChannel, dcHandle string) {
 	ch := make(chan []byte, 4096)
-	h.sendChsMu.Lock()
-	h.sendChs[dcHandle] = ch
-	h.sendChsMu.Unlock()
+	if !h.registry.RegisterDCSendCh(dcHandle, ch) {
+		// Already registered (shouldn't happen — RegisterChild gives unique
+		// handles).  Drop the new channel rather than start a duplicate
+		// goroutine.
+		log.Printf("warning: duplicate DC send goroutine registration for %s", dcHandle)
+		return
+	}
 
 	idx := Trace.DCIdx(dcHandle)
+	sendEvent := h.sendEvent
 
 	go func() {
 		for data := range ch {
 			if Trace.Enabled() {
 				t0 := time.Now()
 				if err := dc.Send(data); err != nil {
-					h.sendEvent(Event("event:dc:error", dcHandle, map[string]interface{}{
+					sendEvent(Event("event:dc:error", dcHandle, map[string]interface{}{
 						"error": err.Error(),
 					}))
 				}
@@ -58,7 +64,7 @@ func (h *Handler) startDCSendGoroutine(dc *webrtc.DataChannel, dcHandle string) 
 				atomic.AddInt64(&Trace.DCNs[idx], time.Since(t0).Nanoseconds())
 			} else {
 				if err := dc.Send(data); err != nil {
-					h.sendEvent(Event("event:dc:error", dcHandle, map[string]interface{}{
+					sendEvent(Event("event:dc:error", dcHandle, map[string]interface{}{
 						"error": err.Error(),
 					}))
 				}
@@ -67,16 +73,11 @@ func (h *Handler) startDCSendGoroutine(dc *webrtc.DataChannel, dcHandle string) 
 	}()
 }
 
-// stopDCSendGoroutine closes the send channel for dcHandle, causing its
-// goroutine to exit cleanly.
+// stopDCSendGoroutine removes and closes the send channel for dcHandle,
+// causing its goroutine to exit cleanly.  Safe to call from any handler —
+// the channel lives on the registry, not the handler.
 func (h *Handler) stopDCSendGoroutine(dcHandle string) {
-	h.sendChsMu.Lock()
-	ch, ok := h.sendChs[dcHandle]
-	if ok {
-		delete(h.sendChs, dcHandle)
-	}
-	h.sendChsMu.Unlock()
-	if ok {
+	if ch, ok := h.registry.RemoveDCSendCh(dcHandle); ok {
 		close(ch)
 	}
 }
@@ -501,10 +502,9 @@ func (h *Handler) handlePCCreateDc(msg *Message) Message {
 func (h *Handler) handleDCSend(msg *Message) Message {
 	// Route to the per-DC goroutine so that sends to different connections
 	// execute concurrently rather than being serialized by the read loop.
-	h.sendChsMu.RLock()
-	ch, ok := h.sendChs[msg.Handle]
-	h.sendChsMu.RUnlock()
-
+	// The send channel lives on the registry, so dc:send works from any
+	// connection — not just the one that created the DataChannel.
+	ch, ok := h.registry.LookupDCSendCh(msg.Handle)
 	if !ok {
 		h.sendEvent(Event("event:dc:error", msg.Handle, map[string]interface{}{
 			"error": "dc:send on unknown handle: " + msg.Handle,
@@ -518,9 +518,7 @@ func (h *Handler) handleDCSend(msg *Message) Message {
 		buf := make([]byte, len(payload))
 		copy(buf, payload)
 		if Trace.Enabled() {
-			h.sendChsMu.RLock()
 			idx := Trace.DCIdx(msg.Handle)
-			h.sendChsMu.RUnlock()
 			depth := int64(len(ch))
 			if cur := atomic.LoadInt64(&Trace.DCQDepth[idx]); depth > cur {
 				atomic.StoreInt64(&Trace.DCQDepth[idx], depth)

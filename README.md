@@ -202,6 +202,32 @@ Two settings require all values in the group to be provided together or not at a
 
 Function-typed settings (`SetInterfaceFilter`, `SetIPFilter`, `SetVNet`, etc.) cannot be serialised over the wire and are not supported. Use them by forking the Go server directly if needed.
 
+## Driving pion from worker isolates
+
+`PionBridge.initialize()` calls a `MethodChannel` to spawn the native server, so it must run on the **root isolate**. To drive WebRTC from a worker isolate (e.g. to keep heavy DataChannel work off the UI thread), split the bootstrap from the connection:
+
+```dart
+// --- root isolate ---
+final endpoint = await PionBridge.startServer();
+Isolate.spawn(_workerEntry, {
+  'sendPort': port.sendPort,
+  'endpoint': endpoint.toMap(),
+});
+
+// --- worker isolate ---
+Future<void> _workerEntry(Map args) async {
+  final endpoint = PionServerEndpoint.fromMap(args['endpoint']);
+  final pion = await PionBridge.connectExisting(endpoint);
+
+  final pc = await pion.createPeerConnection();
+  // … drive WebRTC entirely from the worker isolate
+}
+```
+
+Both isolates can hold a `PionBridge` against the same Go server. Each gets its own WebSocket session, request-id stream, and event dispatcher; resources created in one isolate are owned by that isolate. Closing one bridge does not affect the other.
+
+The convenience constructor `PionBridge.initialize()` is unchanged — it now internally calls `startServer()` followed by `connectExisting()`.
+
 ## Backpressure Handling
 
 When sending large amounts of data over a DataChannel, the native send buffer can fill up faster than the remote peer can receive. To avoid dropping packets or blocking the sender, use the buffered amount low threshold to implement flow control:

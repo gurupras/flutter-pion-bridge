@@ -471,22 +471,15 @@ func TestHandleDCSend_InvalidDataType(t *testing.T) {
 		},
 	})
 
-	if resp.Type != "" {
-		t.Fatalf("expected no response (fire-and-forget), got %s", resp.Type)
+	// dc:send is now an RPC with synchronous error response for invalid input.
+	if resp.Type != "error" {
+		t.Fatalf("expected error response, got %s", resp.Type)
 	}
-	events := th.getEvents()
-	var errEvent *Message
-	for i := range events {
-		if events[i].Type == "event:dc:error" && events[i].Handle == dcHandle {
-			errEvent = &events[i]
-			break
-		}
+	if resp.Data["code"] != "INVALID_REQUEST" {
+		t.Errorf("expected INVALID_REQUEST, got %v", resp.Data["code"])
 	}
-	if errEvent == nil {
-		t.Fatal("expected event:dc:error, got none")
-	}
-	if errEvent.Data["error"] != "data must be string or binary" {
-		t.Errorf("unexpected error message: %v", errEvent.Data["error"])
+	if resp.Data["message"] != "data must be string or binary" {
+		t.Errorf("unexpected error message: %v", resp.Data["message"])
 	}
 }
 
@@ -616,19 +609,19 @@ func TestHandleDCSend_OnPCHandle(t *testing.T) {
 		Data: map[string]interface{}{"data": "hello", "is_binary": false},
 	})
 
-	if resp.Type != "" {
-		t.Fatalf("expected no response (fire-and-forget), got %s", resp.Type)
+	// dc:send on a PC handle (no DCSendState registered) returns NOT_FOUND.
+	if resp.Type != "error" {
+		t.Fatalf("expected error response, got %s", resp.Type)
 	}
-	events := th.getEvents()
-	var errEvent *Message
-	for i := range events {
-		if events[i].Type == "event:dc:error" && events[i].Handle == pcHandle {
-			errEvent = &events[i]
-			break
+	if resp.Data["code"] != "NOT_FOUND" {
+		t.Errorf("expected NOT_FOUND, got %v", resp.Data["code"])
+	}
+	// No side-channel event:dc:error should be emitted; the typed error
+	// response is the only signal for unknown-handle sends.
+	for _, e := range th.getEvents() {
+		if e.Type == "event:dc:error" && e.Handle == pcHandle {
+			t.Error("unexpected event:dc:error emitted for unknown-handle send")
 		}
-	}
-	if errEvent == nil {
-		t.Fatal("expected event:dc:error, got none")
 	}
 }
 

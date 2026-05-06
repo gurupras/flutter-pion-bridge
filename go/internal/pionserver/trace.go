@@ -48,6 +48,35 @@ func (t *PionTrace) Enabled() bool {
 	return atomic.LoadInt32(&t.enabled) != 0
 }
 
+// lifecycleEnabled is the on/off flag for verbose per-event lifecycle logs
+// (every dc.Send, every OnMessage, every OnBufferedAmountLow, every ack
+// emission).  Off by default — turn on by setting PION_LIFECYCLE_LOG=1 in
+// the environment before the binary starts, or by calling EnableLifecycleLog
+// from a test.  Independent of the per-second counter trace above so it can
+// be flipped without affecting throughput tests.
+var lifecycleEnabled int32
+
+func init() {
+	if v := os.Getenv("PION_LIFECYCLE_LOG"); v == "1" || v == "true" || v == "yes" {
+		atomic.StoreInt32(&lifecycleEnabled, 1)
+	}
+}
+
+// EnableLifecycleLog turns on verbose per-event logging at runtime.
+func EnableLifecycleLog() { atomic.StoreInt32(&lifecycleEnabled, 1) }
+
+// LifecycleLogEnabled reports whether verbose per-event logging is on.
+func LifecycleLogEnabled() bool { return atomic.LoadInt32(&lifecycleEnabled) != 0 }
+
+// lifeLogf prints a lifecycle line to stderr if enabled.  Caller-side gate
+// keeps the formatter cost zero when off (use LifecycleLogEnabled() in hot
+// paths before building the args).
+func lifeLogf(format string, args ...interface{}) {
+	if LifecycleLogEnabled() {
+		fmt.Fprintf(os.Stderr, "[PION-LC] "+format+"\n", args...)
+	}
+}
+
 // DCIdx returns a stable 0-based index for dcHandle, allocating one on first use.
 func (t *PionTrace) DCIdx(dcHandle string) int {
 	t.mu.Lock()

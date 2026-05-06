@@ -28,6 +28,6 @@ abstract class PionResource {
     // uses a request-id Completer, not the dispatcher, so its response is
     // still delivered correctly.
     dispatcher.unsubscribe(handle);
-    await request('resource:delete', {}).catchError((_) {});
+    await request('resource:delete', {}).catchError((_) => <String, dynamic>{});
   }
 }

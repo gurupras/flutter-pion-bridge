@@ -1,6 +1,26 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+/// Connection details for an already-running pion bridge server.
+///
+/// Returned by [PionBridge.startServer] (which must run on the root isolate)
+/// and consumed by [PionBridge.connectExisting] (which can run on any
+/// isolate). Send across isolate boundaries via `SendPort.send`.
+class PionServerEndpoint {
+  final int port;
+  final String token;
+
+  const PionServerEndpoint({required this.port, required this.token});
+
+  Map<String, dynamic> toMap() => {'port': port, 'token': token};
+
+  factory PionServerEndpoint.fromMap(Map<dynamic, dynamic> map) =>
+      PionServerEndpoint(
+        port: map['port'] as int,
+        token: map['token'] as String,
+      );
+}
+
 class IceServer {
   final List<String> urls;
   final String? username;
@@ -38,6 +58,34 @@ class DataChannelMessage {
   DataChannelMessage({required this.bytes, required this.isBinary});
 
   String get text => utf8.decode(bytes);
+}
+
+/// Per-DataChannel send tunables sent in the `init` message.
+///
+/// All fields are optional; omitted fields keep the server-side defaults
+/// ([DCConfig.DefaultDCConfig] in Go: 512 KB low-water threshold, queue
+/// depth 32).  Individual channels can further adjust the buffer threshold
+/// at runtime via [PionDataChannel.setBufferedAmountLowThreshold].
+class PionDCConfig {
+  /// Low-water mark in bytes for the native send buffer.  The [PionDataChannel.sendBinary]
+  /// ack (when `awaitDrain` is true) is held until pion's buffer drains to
+  /// at or below this value.  Default: 512 KB.
+  final int? bufferedAmountLowThreshold;
+
+  /// Capacity of the per-DC work channel on the Go side.  Must be >= 1.
+  /// Default: 32.
+  final int? sendQueueDepth;
+
+  const PionDCConfig({
+    this.bufferedAmountLowThreshold,
+    this.sendQueueDepth,
+  });
+
+  Map<String, dynamic> toMap() => {
+        if (bufferedAmountLowThreshold != null)
+          'buffered_amount_low_threshold': bufferedAmountLowThreshold,
+        if (sendQueueDepth != null) 'send_queue_depth': sendQueueDepth,
+      };
 }
 
 /// Configuration for the pion SettingEngine, sent in the [PionBridge.initialize]
@@ -104,6 +152,10 @@ class PionSettingsEngine {
   // String settings
   final String? multicastDnsHostName;
 
+  /// DataChannel send tunables.  Overrides the server-side defaults for every
+  /// DataChannel created through this bridge session.
+  final PionDCConfig? dcConfig;
+
   const PionSettingsEngine({
     this.disableActiveTcp,
     this.disableCertificateFingerprintVerification,
@@ -135,6 +187,7 @@ class PionSettingsEngine {
     this.dtlsRetransmissionIntervalMs,
     this.stunGatherTimeoutMs,
     this.multicastDnsHostName,
+    this.dcConfig,
   });
 
   Map<String, dynamic> toMap() {
@@ -144,7 +197,8 @@ class PionSettingsEngine {
       map['disable_certificate_fingerprint_verification'] =
           disableCertificateFingerprintVerification;
     }
-    if (disableCloseByDtls != null) map['disable_close_by_dtls'] = disableCloseByDtls;
+    if (disableCloseByDtls != null)
+      map['disable_close_by_dtls'] = disableCloseByDtls;
     if (disableSrtcpReplayProtection != null) {
       map['disable_srtcp_replay_protection'] = disableSrtcpReplayProtection;
     }
@@ -154,16 +208,19 @@ class PionSettingsEngine {
     if (enableDataChannelBlockWrite != null) {
       map['enable_data_channel_block_write'] = enableDataChannelBlockWrite;
     }
-    if (enableSctpZeroChecksum != null) map['enable_sctp_zero_checksum'] = enableSctpZeroChecksum;
+    if (enableSctpZeroChecksum != null)
+      map['enable_sctp_zero_checksum'] = enableSctpZeroChecksum;
     if (enableTracing == true) map['enable_tracing'] = true;
     if (sctpMaxReceiveBufferSize != null) {
       map['sctp_max_receive_buffer_size'] = sctpMaxReceiveBufferSize;
     }
-    if (sctpMaxMessageSize != null) map['sctp_max_message_size'] = sctpMaxMessageSize;
+    if (sctpMaxMessageSize != null)
+      map['sctp_max_message_size'] = sctpMaxMessageSize;
     if (sctpMinCwnd != null) map['sctp_min_cwnd'] = sctpMinCwnd;
     if (sctpCwndCaStep != null) map['sctp_cwnd_ca_step'] = sctpCwndCaStep;
     if (receiveMtu != null) map['receive_mtu'] = receiveMtu;
-    if (iceMaxBindingRequests != null) map['ice_max_binding_requests'] = iceMaxBindingRequests;
+    if (iceMaxBindingRequests != null)
+      map['ice_max_binding_requests'] = iceMaxBindingRequests;
     if (dtlsReplayProtectionWindow != null) {
       map['dtls_replay_protection_window'] = dtlsReplayProtectionWindow;
     }
@@ -173,27 +230,39 @@ class PionSettingsEngine {
     if (srtpReplayProtectionWindow != null) {
       map['srtp_replay_protection_window'] = srtpReplayProtectionWindow;
     }
-    if (ephemeralUdpPortMin != null) map['ephemeral_udp_port_min'] = ephemeralUdpPortMin;
-    if (ephemeralUdpPortMax != null) map['ephemeral_udp_port_max'] = ephemeralUdpPortMax;
+    if (ephemeralUdpPortMin != null)
+      map['ephemeral_udp_port_min'] = ephemeralUdpPortMin;
+    if (ephemeralUdpPortMax != null)
+      map['ephemeral_udp_port_max'] = ephemeralUdpPortMax;
     if (iceDisconnectedTimeoutMs != null) {
       map['ice_disconnected_timeout_ms'] = iceDisconnectedTimeoutMs;
     }
-    if (iceFailedTimeoutMs != null) map['ice_failed_timeout_ms'] = iceFailedTimeoutMs;
+    if (iceFailedTimeoutMs != null)
+      map['ice_failed_timeout_ms'] = iceFailedTimeoutMs;
     if (iceKeepaliveMs != null) map['ice_keepalive_ms'] = iceKeepaliveMs;
     if (sctpRtoMaxMs != null) map['sctp_rto_max_ms'] = sctpRtoMaxMs;
-    if (hostAcceptanceMinWaitMs != null) map['host_acceptance_min_wait_ms'] = hostAcceptanceMinWaitMs;
+    if (hostAcceptanceMinWaitMs != null)
+      map['host_acceptance_min_wait_ms'] = hostAcceptanceMinWaitMs;
     if (srflxAcceptanceMinWaitMs != null) {
       map['srflx_acceptance_min_wait_ms'] = srflxAcceptanceMinWaitMs;
     }
     if (prflxAcceptanceMinWaitMs != null) {
       map['prflx_acceptance_min_wait_ms'] = prflxAcceptanceMinWaitMs;
     }
-    if (relayAcceptanceMinWaitMs != null) map['relay_acceptance_min_wait_ms'] = relayAcceptanceMinWaitMs;
+    if (relayAcceptanceMinWaitMs != null)
+      map['relay_acceptance_min_wait_ms'] = relayAcceptanceMinWaitMs;
     if (dtlsRetransmissionIntervalMs != null) {
       map['dtls_retransmission_interval_ms'] = dtlsRetransmissionIntervalMs;
     }
-    if (stunGatherTimeoutMs != null) map['stun_gather_timeout_ms'] = stunGatherTimeoutMs;
-    if (multicastDnsHostName != null) map['multicast_dns_host_name'] = multicastDnsHostName;
+    if (stunGatherTimeoutMs != null)
+      map['stun_gather_timeout_ms'] = stunGatherTimeoutMs;
+    if (multicastDnsHostName != null)
+      map['multicast_dns_host_name'] = multicastDnsHostName;
+    final dc = dcConfig;
+    if (dc != null) {
+      final dcMap = dc.toMap();
+      if (dcMap.isNotEmpty) map['dc_config'] = dcMap;
+    }
     return map;
   }
 }

@@ -7,26 +7,6 @@ import 'peer_connection.dart';
 import 'reconnect.dart';
 import 'types.dart';
 
-/// Connection details for an already-running pion bridge server.
-///
-/// Returned by [PionBridge.startServer] (which must run on the root isolate)
-/// and consumed by [PionBridge.connectExisting] (which can run on any
-/// isolate). Send across isolate boundaries via `SendPort.send`.
-class PionServerEndpoint {
-  final int port;
-  final String token;
-
-  const PionServerEndpoint({required this.port, required this.token});
-
-  Map<String, dynamic> toMap() => {'port': port, 'token': token};
-
-  factory PionServerEndpoint.fromMap(Map<dynamic, dynamic> map) =>
-      PionServerEndpoint(
-        port: map['port'] as int,
-        token: map['token'] as String,
-      );
-}
-
 class PionBridge {
   late ReconnectingWebSocketConnection _connection;
   late EventDispatcher _dispatcher;
@@ -71,19 +51,21 @@ class PionBridge {
     );
   }
 
-  /// Starts the native pion bridge server and returns its WebSocket endpoint.
+  /// Starts the native pion bridge server via the platform channel and returns
+  /// its WebSocket endpoint.
   ///
-  /// **Must be called from the root isolate** — this invokes a
-  /// [MethodChannel], which is only available there. The returned
-  /// [PionServerEndpoint] can be sent to worker isolates, which can then call
-  /// [connectExisting] to attach without going through the platform channel.
+  /// **Must be called from the root isolate** — invokes the
+  /// `io.pion_bridge.bridge` [MethodChannel].  If the host app starts the
+  /// server through a different mechanism (e.g. FFI into a combined native
+  /// library), obtain the [PionServerEndpoint] directly and call
+  /// [connectExisting] instead of this method.
   ///
   /// The server lives for the lifetime of the process (a second call is a
-  /// no-op-ish reset on the native side). Closing a [PionBridge] only closes
-  /// its own WebSocket — other [PionBridge] instances on other isolates
-  /// remain connected.
+  /// no-op-ish reset on the native side).  Closing a [PionBridge] only closes
+  /// its own WebSocket — other [PionBridge] instances on other isolates remain
+  /// connected.
   static Future<PionServerEndpoint> startServer() async {
-    const platform = MethodChannel('io.filemingo.pionbridge');
+    const platform = MethodChannel('io.pion_bridge.bridge');
     final result = await platform.invokeMethod('startServer');
     return PionServerEndpoint(
       port: result['port'] as int,

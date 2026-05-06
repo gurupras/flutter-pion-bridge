@@ -26,34 +26,35 @@ class PionPeerConnection extends PionResource {
         .map((msg) => IceCandidate(
               candidate: (msg.data['candidate'] as String?) ?? '',
               sdpMid: (msg.data['sdp_mid'] as String?) ?? '',
-              sdpMlineIndex: (msg.data['sdp_mline_index'] as num?)?.toInt() ?? 0,
+              sdpMlineIndex:
+                  (msg.data['sdp_mline_index'] as num?)?.toInt() ?? 0,
             ));
 
     _onIceGatheringComplete = onEvent()
         .where((msg) => msg.type == 'event:iceGatheringComplete')
         .map((_) => null);
 
-    _onDataChannel = onEvent()
-        .where((msg) => msg.type == 'event:dataChannel')
-        .map((msg) {
-          final dcLabel = (msg.data['label'] as String?) ?? '';
-          onLog?.call('[PC] incoming DC label=$dcLabel');
-          return PionDataChannel(
-            (msg.data['dc_handle'] as String?) ?? '',
-            connection,
-            dispatcher,
-            label: dcLabel,
-            onLog: onLog,
-          );
-        });
+    _onDataChannel =
+        onEvent().where((msg) => msg.type == 'event:dataChannel').map((msg) {
+      final dcLabel = (msg.data['label'] as String?) ?? '';
+      onLog?.call('[PC] incoming DC label=$dcLabel');
+      return PionDataChannel(
+        (msg.data['dc_handle'] as String?) ?? '',
+        connection,
+        dispatcher,
+        label: dcLabel,
+        onLog: onLog,
+      );
+    });
 
     _onConnectionStateChange = onEvent()
         .where((msg) => msg.type == 'event:connectionStateChange')
         .map((msg) {
-          final state = ConnectionState.fromString((msg.data['state'] as String?) ?? 'new');
-          onLog?.call('[PC] connectionState=$state');
-          return state;
-        });
+      final state =
+          ConnectionState.fromString((msg.data['state'] as String?) ?? 'new');
+      onLog?.call('[PC] connectionState=$state');
+      return state;
+    });
   }
 
   Stream<IceCandidate> get onIceCandidate => _onIceCandidate;

@@ -69,7 +69,7 @@ std::string ReadLineTimeout(HANDLE h, DWORD timeout_ms) {
 void PionBridgePlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
   auto channel = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-      registrar->messenger(), "io.filemingo.pionbridge",
+      registrar->messenger(), "io.pion_bridge.bridge",
       &flutter::StandardMethodCodec::GetInstance());
 
   auto plugin = std::make_unique<PionBridgePlugin>();

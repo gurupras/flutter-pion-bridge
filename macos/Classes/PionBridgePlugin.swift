@@ -6,7 +6,7 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(
-            name: "io.filemingo.pionbridge",
+            name: "io.pion_bridge.bridge",
             binaryMessenger: registrar.messenger
         )
         let instance = PionBridgePlugin()

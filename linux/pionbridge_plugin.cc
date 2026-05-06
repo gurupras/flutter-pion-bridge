@@ -220,7 +220,7 @@ void pionbridge_plugin_register_with_registrar(FlPluginRegistrar* registrar) {
   g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
   plugin->channel = fl_method_channel_new(
       fl_plugin_registrar_get_messenger(registrar),
-      "io.filemingo.pionbridge",
+      "io.pion_bridge.bridge",
       FL_METHOD_CODEC(codec));
   fl_method_channel_set_method_call_handler(
       plugin->channel, method_call_cb, plugin, g_object_unref);

@@ -10,7 +10,7 @@ class PionBridgePlugin : FlutterPlugin, MethodCallHandler {
     private lateinit var channel: MethodChannel
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        channel = MethodChannel(binding.binaryMessenger, "io.filemingo.pionbridge")
+        channel = MethodChannel(binding.binaryMessenger, "io.pion_bridge.bridge")
         channel.setMethodCallHandler(this)
     }
 

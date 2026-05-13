@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/pion-bridge/server/internal/pionserver"
+	"github.com/gurupras/flutter-pion-bridge/go/internal/pionserver"
 )
 
 func main() {

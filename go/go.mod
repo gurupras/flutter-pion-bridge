@@ -1,4 +1,4 @@
-module github.com/pion-bridge/server
+module github.com/gurupras/flutter-pion-bridge/go
 
 go 1.25.0
 

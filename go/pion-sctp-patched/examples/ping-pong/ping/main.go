@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/pion/logging"
-	"github.com/pion/sctp"
+	sctp "github.com/gurupras/flutter-pion-bridge/go/pion-sctp-patched"
 )
 
 func main() { //nolint:cyclop

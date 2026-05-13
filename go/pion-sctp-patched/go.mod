@@ -1,4 +1,4 @@
-module github.com/pion/sctp
+module github.com/gurupras/flutter-pion-bridge/go/pion-sctp-patched
 
 require (
 	github.com/pion/logging v0.2.4

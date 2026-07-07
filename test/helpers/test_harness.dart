@@ -21,21 +21,41 @@ class TestHarness {
 
   bool get disconnected => _disconnected;
 
-  /// Build the Go binary once per test run.
+  /// Build the Go binary once per test PROCESS.
+  ///
+  /// `flutter test` runs each test file in its own process, so this static is
+  /// not shared across files and several builds can run concurrently. Two
+  /// things make that safe here:
+  ///  - builds are serialized with an exclusive file lock, and
+  ///  - the binary is built to a temp path and atomically rename()d over the
+  ///    target, so another file's Process.start never sees a partially
+  ///    written binary (ETXTBSY) or a missing one (ENOENT). A rename swaps
+  ///    the inode; already-running servers are unaffected.
   static Future<void> ensureBinary() async {
-    if (_binaryPath != null && File(_binaryPath!).existsSync()) return;
+    if (_binaryPath != null) return;
 
     final goDir = '${Directory.current.path}/go';
-    _binaryPath = '$goDir/pionbridge_test_bin';
+    final target = '$goDir/pionbridge_test_bin';
 
-    final result = await Process.run(
-      'go',
-      ['build', '-o', _binaryPath!, '.'],
-      workingDirectory: goDir,
-    );
-    if (result.exitCode != 0) {
-      throw Exception('Failed to build Go binary:\n${result.stderr}');
+    final lockFile =
+        await File('$goDir/.pionbridge_test_bin.lock').open(mode: FileMode.write);
+    await lockFile.lock(FileLock.blockingExclusive);
+    try {
+      final tmp = '$target.build.$pid';
+      final result = await Process.run(
+        'go',
+        ['build', '-o', tmp, '.'],
+        workingDirectory: goDir,
+      );
+      if (result.exitCode != 0) {
+        throw Exception('Failed to build Go binary:\n${result.stderr}');
+      }
+      File(tmp).renameSync(target);
+    } finally {
+      await lockFile.unlock();
+      await lockFile.close();
     }
+    _binaryPath = target;
   }
 
   /// Start the Go server and connect.
@@ -66,6 +86,17 @@ class TestHarness {
       'ws://127.0.0.1:$port/',
       token: token,
     );
+
+    // Loopback-only ICE: test peers live in the same process, so host
+    // candidates on 127.0.0.1 are all they need. Gathering on every
+    // interface makes connection setup slow and flaky on multi-interface
+    // hosts (Docker/libvirt bridges).
+    await connection.request('init', null, {
+      'settings_engine': {
+        'interface_whitelist': ['lo'],
+        'include_loopback_candidate': true,
+      },
+    });
   }
 
   /// Create a PeerConnection through the connection directly.
@@ -114,11 +145,18 @@ class TestHarness {
     final offerer = await createPeerConnection();
     final answerer = await createPeerConnection();
 
-    // Subscribe to ICE candidates before signaling
-    final offererCandidates = <IceCandidate>[];
-    final answererCandidates = <IceCandidate>[];
-    offerer.onIceCandidate.listen(offererCandidates.add);
-    answerer.onIceCandidate.listen(answererCandidates.add);
+    // Trickle ICE: forward candidates to the other side as they are
+    // gathered. A fixed gather-sleep followed by a one-shot exchange was
+    // flaky on hosts with many network interfaces (Docker/libvirt bridges),
+    // where gathering outlives the sleep and half the candidates were never
+    // exchanged. Late candidates (after the pair connects or a test ends)
+    // are forwarded best-effort and errors ignored.
+    offerer.onIceCandidate.listen((c) {
+      answerer.addIceCandidate(c).catchError((_) {});
+    });
+    answerer.onIceCandidate.listen((c) {
+      offerer.addIceCandidate(c).catchError((_) {});
+    });
 
     // Subscribe to answerer's onDataChannel before signaling
     final answererDcCompleter = Completer<PionDataChannel>();
@@ -128,8 +166,10 @@ class TestHarness {
       }
     });
 
-    // Create DC on offerer before offer
+    // Create DC on offerer before offer, and watch for it to open — that is
+    // the real "connected" signal (ICE + DTLS + SCTP all established).
     final offererDc = await offerer.createDataChannel('test');
+    final offererOpen = offererDc.onOpen.first;
 
     // Signaling
     final offer = await offerer.createOffer();
@@ -140,23 +180,11 @@ class TestHarness {
     await answerer.setLocalDescription(answer, 'answer');
     await offerer.setRemoteDescription(answer, 'answer');
 
-    // Wait for ICE gathering
-    await Future.delayed(const Duration(seconds: 1));
-
-    // Exchange ICE candidates
-    for (final c in offererCandidates) {
-      await answerer.addIceCandidate(c);
-    }
-    for (final c in answererCandidates) {
-      await offerer.addIceCandidate(c);
-    }
-
-    // Wait for connection + SCTP to establish
-    await Future.delayed(const Duration(seconds: 2));
-
-    // Get answerer's DC
+    // Wait for the channel to actually open on both sides instead of
+    // sleeping for a fixed interval.
+    await offererOpen.timeout(const Duration(seconds: 30));
     final answererDc = await answererDcCompleter.future
-        .timeout(const Duration(seconds: 5));
+        .timeout(const Duration(seconds: 30));
 
     return ConnectedPair(
       offerer: offerer,
@@ -166,14 +194,12 @@ class TestHarness {
     );
   }
 
-  /// Clean up the binary after all tests.
-  static void cleanupBinary() {
-    if (_binaryPath != null) {
-      try {
-        File(_binaryPath!).deleteSync();
-      } catch (_) {}
-    }
-  }
+  /// Retained for the per-file tearDownAll call sites; intentionally does
+  /// NOT delete the binary. Test files run in separate processes, and one
+  /// file finishing (and deleting) while another was still spawning servers
+  /// produced ENOENT mid-run. The binary is a gitignored build artifact;
+  /// ensureBinary rebuilds it (cheap, go build cache) on every test process.
+  static void cleanupBinary() {}
 }
 
 class ConnectedPair {

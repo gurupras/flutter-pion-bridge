@@ -63,15 +63,25 @@ void main() {
     });
 
     test('can drive a full WebRTC handshake without MethodChannel', () async {
-      final pion = await PionBridge.connectExisting(endpoint());
+      final pion = await PionBridge.connectExisting(
+        endpoint(),
+        settingsEngine: const PionSettingsEngine(
+          interfaceWhitelist: ['lo'],
+          includeLoopbackCandidate: true,
+        ),
+      );
       try {
         final offerer = await pion.createPeerConnection();
         final answerer = await pion.createPeerConnection();
 
-        final offererCandidates = <IceCandidate>[];
-        final answererCandidates = <IceCandidate>[];
-        offerer.onIceCandidate.listen(offererCandidates.add);
-        answerer.onIceCandidate.listen(answererCandidates.add);
+        // Trickle ICE: forward candidates as they arrive (a fixed sleep +
+        // one-shot exchange is flaky on hosts with many interfaces).
+        offerer.onIceCandidate.listen((c) {
+          answerer.addIceCandidate(c).catchError((_) {});
+        });
+        answerer.onIceCandidate.listen((c) {
+          offerer.addIceCandidate(c).catchError((_) {});
+        });
 
         final offererConnected = Completer<void>();
         offerer.onConnectionStateChange.listen((state) {
@@ -91,17 +101,8 @@ void main() {
         await answerer.setLocalDescription(answer, 'answer');
         await offerer.setRemoteDescription(answer, 'answer');
 
-        await Future<void>.delayed(const Duration(seconds: 1));
-
-        for (final c in List.of(offererCandidates)) {
-          await answerer.addIceCandidate(c);
-        }
-        for (final c in List.of(answererCandidates)) {
-          await offerer.addIceCandidate(c);
-        }
-
         await offererConnected.future
-            .timeout(const Duration(seconds: 10));
+            .timeout(const Duration(seconds: 30));
       } finally {
         await pion.close();
       }
@@ -143,16 +144,31 @@ void main() {
       // scenario the worker-isolate pattern hits: the answerer worker
       // creates the DC, then exits while the message-sender worker takes
       // over.
-      final creator = await PionBridge.connectExisting(endpoint());
-      final partner = await PionBridge.connectExisting(endpoint());
+      final creator = await PionBridge.connectExisting(
+        endpoint(),
+        settingsEngine: const PionSettingsEngine(
+          interfaceWhitelist: ['lo'],
+          includeLoopbackCandidate: true,
+        ),
+      );
+      final partner = await PionBridge.connectExisting(
+        endpoint(),
+        settingsEngine: const PionSettingsEngine(
+          interfaceWhitelist: ['lo'],
+          includeLoopbackCandidate: true,
+        ),
+      );
 
       final offerer = await creator.createPeerConnection();
       final answerer = await partner.createPeerConnection();
 
-      final offererCandidates = <IceCandidate>[];
-      final answererCandidates = <IceCandidate>[];
-      offerer.onIceCandidate.listen(offererCandidates.add);
-      answerer.onIceCandidate.listen(answererCandidates.add);
+      // Trickle ICE: forward candidates as they arrive.
+      offerer.onIceCandidate.listen((c) {
+        answerer.addIceCandidate(c).catchError((_) {});
+      });
+      answerer.onIceCandidate.listen((c) {
+        offerer.addIceCandidate(c).catchError((_) {});
+      });
 
       final offererDc = await offerer.createDataChannel('regression');
       final received = Completer<String>();
@@ -178,18 +194,9 @@ void main() {
       await answerer.setLocalDescription(answer, 'answer');
       await offerer.setRemoteDescription(answer, 'answer');
 
-      await Future<void>.delayed(const Duration(seconds: 1));
-
-      for (final c in List.of(offererCandidates)) {
-        await answerer.addIceCandidate(c);
-      }
-      for (final c in List.of(answererCandidates)) {
-        await offerer.addIceCandidate(c);
-      }
-
-      await dcOpen.future.timeout(const Duration(seconds: 10));
+      await dcOpen.future.timeout(const Duration(seconds: 30));
       final answererDc =
-          await answererDcCompleter.future.timeout(const Duration(seconds: 10));
+          await answererDcCompleter.future.timeout(const Duration(seconds: 30));
       final answererDcHandle = answererDc.handle;
 
       // Close the connection that created the answerer's DC.  Before the fix

@@ -57,7 +57,10 @@ class DataChannelMessage {
 
   DataChannelMessage({required this.bytes, required this.isBinary});
 
-  String get text => utf8.decode(bytes);
+  /// The payload decoded as UTF-8. Malformed sequences are replaced with
+  /// U+FFFD instead of throwing — check [isBinary] before treating a frame
+  /// as text.
+  String get text => utf8.decode(bytes, allowMalformed: true);
 }
 
 /// Per-DataChannel send tunables sent in the `init` message.
@@ -152,6 +155,15 @@ class PionSettingsEngine {
   // String settings
   final String? multicastDnsHostName;
 
+  /// Restricts ICE gathering to the named network interfaces (e.g. `['lo']`
+  /// or `['eth0', 'wlan0']`). When null, all interfaces are used. Combine
+  /// with [includeLoopbackCandidate] for loopback-only operation (loopback
+  /// candidates are excluded by default per the ICE spec).
+  final List<String>? interfaceWhitelist;
+
+  /// Includes loopback (127.0.0.1) host candidates in ICE gathering.
+  final bool? includeLoopbackCandidate;
+
   /// DataChannel send tunables.  Overrides the server-side defaults for every
   /// DataChannel created through this bridge session.
   final PionDCConfig? dcConfig;
@@ -187,6 +199,8 @@ class PionSettingsEngine {
     this.dtlsRetransmissionIntervalMs,
     this.stunGatherTimeoutMs,
     this.multicastDnsHostName,
+    this.interfaceWhitelist,
+    this.includeLoopbackCandidate,
     this.dcConfig,
   });
 
@@ -258,6 +272,11 @@ class PionSettingsEngine {
       map['stun_gather_timeout_ms'] = stunGatherTimeoutMs;
     if (multicastDnsHostName != null)
       map['multicast_dns_host_name'] = multicastDnsHostName;
+    if (interfaceWhitelist != null)
+      map['interface_whitelist'] = interfaceWhitelist;
+    if (includeLoopbackCandidate != null) {
+      map['include_loopback_candidate'] = includeLoopbackCandidate;
+    }
     final dc = dcConfig;
     if (dc != null) {
       final dcMap = dc.toMap();

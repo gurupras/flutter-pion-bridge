@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pion_bridge/src/bridge.dart';
 import 'package:pion_bridge/src/data_channel.dart';
 import 'package:pion_bridge/src/event_dispatcher.dart' as pion;
 import 'package:pion_bridge/src/exception.dart';

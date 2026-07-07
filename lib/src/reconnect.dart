@@ -28,6 +28,11 @@ class ReconnectingWebSocketConnection {
 
   bool _closed = false;
   int _attempts = 0;
+  // Single-flight guard: the underlying connection can report a disconnect
+  // more than once (socket error fires onError AND onDone). Only one
+  // reconnect chain may run at a time or every drop doubles the number of
+  // live connections (and duplicates every event).
+  bool _reconnecting = false;
 
   ReconnectingWebSocketConnection({
     required this.onMessage,
@@ -48,17 +53,35 @@ class ReconnectingWebSocketConnection {
   Future<void> connect(String url, {required String token}) async {
     _url = url;
     _token = token;
-    await _connectOnce();
+    final conn = await _connectOnce();
+    if (await _teardownIfClosed(conn)) {
+      throw PionException('CONNECTION_LOST', 'Connection closed during connect',
+          fatal: true);
+    }
     _attempts = 0;
   }
 
-  Future<void> _connectOnce() async {
-    _conn = WebSocketConnection(
+  Future<WebSocketConnection> _connectOnce() async {
+    final conn = WebSocketConnection(
       onMessage: onMessage,
       onDisconnect: _onDisconnect,
       requestTimeout: requestTimeout,
     );
-    await _conn!.connect(_url, token: _token);
+    _conn = conn;
+    await conn.connect(_url, token: _token);
+    return conn;
+  }
+
+  /// If close() ran while [conn] was mid-connect, tear the fresh socket down
+  /// and report true. Without this a reconnect attempt that resolves after
+  /// close() would fire onReconnected post-close and leak a live socket
+  /// (close() only closed the pre-connect shell of this object).
+  Future<bool> _teardownIfClosed(WebSocketConnection conn) async {
+    if (!_closed) return false;
+    _reconnecting = false;
+    if (identical(_conn, conn)) _conn = null;
+    await conn.close();
+    return true;
   }
 
   void _onDisconnect() {
@@ -66,9 +89,15 @@ class ReconnectingWebSocketConnection {
       onDisconnected?.call();
       return;
     }
+    if (_reconnecting) return;
+    _reconnecting = true;
+    _scheduleReconnect();
+  }
 
+  void _scheduleReconnect() {
     final attempt = _attempts;
     if (maxAttempts != null && attempt >= maxAttempts!) {
+      _reconnecting = false;
       onDisconnected?.call();
       return;
     }
@@ -77,13 +106,18 @@ class ReconnectingWebSocketConnection {
     _attempts++;
 
     Future.delayed(delay, () async {
-      if (_closed) return;
+      if (_closed) {
+        _reconnecting = false;
+        return;
+      }
       try {
-        await _connectOnce();
+        final conn = await _connectOnce();
+        if (await _teardownIfClosed(conn)) return;
         _attempts = 0;
+        _reconnecting = false;
         onReconnected?.call();
       } catch (_) {
-        _onDisconnect();
+        _scheduleReconnect();
       }
     });
   }

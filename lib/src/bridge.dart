@@ -157,5 +157,6 @@ class PionBridge {
 
   Future<void> close() async {
     await _connection.close();
+    _dispatcher.closeAll();
   }
 }

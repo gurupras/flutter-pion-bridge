@@ -1,3 +1,9 @@
 .PENDING-TASKS.md.swp
 build/
 .dart_tool/
+
+go/pionbridge_test_bin
+go/pionbridge_test_bin.build.*
+go/.pionbridge_test_bin.lock
+go/benchpeer
+go/pionbridge_bench_bin

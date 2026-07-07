@@ -33,6 +33,13 @@ Future<(WebSocketConnection, EventDispatcher)> _connect(
   final dispatcher = EventDispatcher();
   final conn = WebSocketConnection(onMessage: dispatcher.broadcast);
   await conn.connect('ws://127.0.0.1:$port/', token: token);
+  // Loopback-only ICE for fast, deterministic in-process connections.
+  await conn.request('init', null, {
+    'settings_engine': {
+      'interface_whitelist': ['lo'],
+      'include_loopback_candidate': true,
+    },
+  });
   return (conn, dispatcher);
 }
 
@@ -169,10 +176,13 @@ void main() {
 
       final offererCandidates = <IceCandidate>[];
       offerer.onIceCandidate.listen(offererCandidates.add);
+      // Snapshot candidates only once gathering has finished — a fixed sleep
+      // undershoots on hosts with many network interfaces.
+      final offererGathered = offerer.onIceGatheringComplete.first;
 
       final offer = await offerer.createOffer();
       await offerer.setLocalDescription(offer, 'offer');
-      await Future.delayed(const Duration(seconds: 1));
+      await offererGathered.timeout(const Duration(seconds: 30));
 
       final offerCandidateMaps = offererCandidates
           .map((c) => <String, dynamic>{
@@ -408,13 +418,29 @@ Future<void> _test3IsolateMain(SendPort coordinator) async {
 
   final offererStates = <ConnectionState>[];
   final answererStates = <ConnectionState>[];
-  offerer.onConnectionStateChange.listen(offererStates.add);
-  answerer.onConnectionStateChange.listen(answererStates.add);
 
-  final offererCandidates = <IceCandidate>[];
-  final answererCandidates = <IceCandidate>[];
-  offerer.onIceCandidate.listen(offererCandidates.add);
-  answerer.onIceCandidate.listen(answererCandidates.add);
+  // Both PCs live in this isolate: trickle candidates directly and wait for
+  // both to actually reach `connected` instead of sleeping fixed intervals.
+  final offererConnected = Completer<void>();
+  final answererConnected = Completer<void>();
+  offerer.onConnectionStateChange.listen((s) {
+    offererStates.add(s);
+    if (s == ConnectionState.connected && !offererConnected.isCompleted) {
+      offererConnected.complete();
+    }
+  });
+  answerer.onConnectionStateChange.listen((s) {
+    answererStates.add(s);
+    if (s == ConnectionState.connected && !answererConnected.isCompleted) {
+      answererConnected.complete();
+    }
+  });
+  offerer.onIceCandidate.listen((c) {
+    answerer.addIceCandidate(c).catchError((_) {});
+  });
+  answerer.onIceCandidate.listen((c) {
+    offerer.addIceCandidate(c).catchError((_) {});
+  });
 
   await offerer.createDataChannel('chat');
 
@@ -426,20 +452,18 @@ Future<void> _test3IsolateMain(SendPort coordinator) async {
   await answerer.setLocalDescription(answer, 'answer');
   await offerer.setRemoteDescription(answer, 'answer');
 
-  await Future.delayed(const Duration(seconds: 1));
-
-  for (final c in List.of(offererCandidates)) {
-    await answerer.addIceCandidate(c);
+  var connected = true;
+  try {
+    await Future.wait([offererConnected.future, answererConnected.future])
+        .timeout(const Duration(seconds: 30));
+  } on TimeoutException {
+    connected = false;
   }
-  for (final c in List.of(answererCandidates)) {
-    await offerer.addIceCandidate(c);
-  }
-
-  await Future.delayed(const Duration(seconds: 3));
   await conn.close();
   myPort.close();
 
-  coordinator.send(offererStates.contains(ConnectionState.connected) &&
+  coordinator.send(connected &&
+      offererStates.contains(ConnectionState.connected) &&
       answererStates.contains(ConnectionState.connected));
 }
 
@@ -478,6 +502,8 @@ Future<void> _test4AnswererMain(SendPort coordinator) async {
     if (!dcHandleCompleter.isCompleted) dcHandleCompleter.complete(dc.handle);
   });
 
+  final answererGathered = answerer.onIceGatheringComplete.first;
+
   await answerer.setRemoteDescription(offerSdp, 'offer');
   final answer = await answerer.createAnswer();
   await answerer.setLocalDescription(answer, 'answer');
@@ -490,7 +516,9 @@ Future<void> _test4AnswererMain(SendPort coordinator) async {
     ));
   }
 
-  await Future.delayed(const Duration(seconds: 1));
+  // Snapshot candidates only after gathering completes (fixed sleeps
+  // undershoot on hosts with many network interfaces).
+  await answererGathered.timeout(const Duration(seconds: 30));
 
   // Send answer + candidates before waiting for onDataChannel.
   // If we waited first we would deadlock: onDataChannel only fires after
@@ -578,10 +606,13 @@ Future<void> _offererIsolateMain(SendPort coordinator) async {
     if (!messageCompleter.isCompleted) messageCompleter.complete(msg.text);
   });
 
+  final offererGathered = offerer.onIceGatheringComplete.first;
+
   final offer = await offerer.createOffer();
   await offerer.setLocalDescription(offer, 'offer');
 
-  await Future.delayed(const Duration(seconds: 1));
+  // Snapshot candidates only after gathering completes.
+  await offererGathered.timeout(const Duration(seconds: 30));
 
   coordinator.send({
     'sdp': offer,
@@ -650,6 +681,8 @@ Future<void> _answererIsolateMain(SendPort coordinator) async {
     if (!dcHandleCompleter.isCompleted) dcHandleCompleter.complete(dc.handle);
   });
 
+  final answererGathered = answerer.onIceGatheringComplete.first;
+
   await answerer.setRemoteDescription(offerSdp, 'offer');
   final answer = await answerer.createAnswer();
   await answerer.setLocalDescription(answer, 'answer');
@@ -662,7 +695,8 @@ Future<void> _answererIsolateMain(SendPort coordinator) async {
     ));
   }
 
-  await Future.delayed(const Duration(seconds: 1));
+  // Snapshot candidates only after gathering completes.
+  await answererGathered.timeout(const Duration(seconds: 30));
 
   // Send answer + candidates to coordinator BEFORE waiting for onDataChannel.
   coordinator.send({

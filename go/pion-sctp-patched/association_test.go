@@ -2013,6 +2013,7 @@ func TestAssocCongestionControl(t *testing.T) { //nolint:cyclop,maintidx
 
 		a0, a1, err := createNewAssociationPair(br, ackModeNormal, 0)
 		assert.NoError(t, err, "failed to create associations")
+		pinUpstreamRTO(a0, a1)
 
 		s0, s1, err := establishSessionPair(br, a0, a1, si)
 		assert.NoError(t, err, "failed to establish session pair")
@@ -2094,6 +2095,7 @@ func TestAssocCongestionControl(t *testing.T) { //nolint:cyclop,maintidx
 		a0, a1, err := createNewAssociationPair(br, ackModeNormal, maxReceiveBufferSize)
 		a0.cwndCAStep = 2800 // 2 mtu
 		assert.NoError(t, err, "failed to create associations")
+		pinUpstreamRTO(a0, a1)
 
 		s0, s1, err := establishSessionPair(br, a0, a1, si)
 		assert.NoError(t, err, "failed to establish session pair")
@@ -2251,6 +2253,19 @@ func TestAssocCongestionControl(t *testing.T) { //nolint:cyclop,maintidx
 	})
 }
 
+// pinUpstreamRTO pins an association's RTO to the RFC 4960 default (1s) and
+// freezes recomputation. This fork lowers rtoInitial/rtoMin to 200ms/100ms
+// for loopback latency (see rtx_timer.go); tests that assert RFC-tuned
+// retransmission timing (delayed-ack windows, congestion counters) must run
+// with the upstream value or the shorter T3-RTX fires mid-scenario and
+// perturbs their chunk/SACK counts. The timer machinery under test is
+// byte-identical to upstream.
+func pinUpstreamRTO(assocs ...*Association) {
+	for _, a := range assocs {
+		a.rtoMgr.setRTO(1000, true)
+	}
+}
+
 func TestAssocDelayedAck(t *testing.T) {
 	t.Run("First DATA chunk gets acked with delay", func(t *testing.T) {
 		lim := test.TimeOut(time.Second * 10)
@@ -2272,6 +2287,7 @@ func TestAssocDelayedAck(t *testing.T) {
 
 		a0, a1, err := createNewAssociationPair(br, ackModeAlwaysDelay, 0)
 		assert.NoError(t, err, "failed to create associations")
+		pinUpstreamRTO(a0, a1)
 
 		s0, s1, err := establishSessionPair(br, a0, a1, si)
 		assert.NoError(t, err, "failed to establish session pair")

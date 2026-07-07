@@ -38,6 +38,7 @@ type PionTrace struct {
 	mu      sync.Mutex
 	dcIndex map[string]int
 	nextIdx int
+	freeIdx []int // slots returned by ReleaseDC, reused before nextIdx grows
 }
 
 // Global trace instance.  Populated by handler/server; printed by StartTracing.
@@ -77,20 +78,41 @@ func lifeLogf(format string, args ...interface{}) {
 	}
 }
 
-// DCIdx returns a stable 0-based index for dcHandle, allocating one on first use.
+// DCIdx returns a stable 0-based index for dcHandle, allocating one on first
+// use. Released slots (see ReleaseDC) are reused before new ones are grown,
+// so long-lived processes with DataChannel churn don't exhaust the 16 slots.
 func (t *PionTrace) DCIdx(dcHandle string) int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if idx, ok := t.dcIndex[dcHandle]; ok {
 		return idx
 	}
-	idx := t.nextIdx
-	t.nextIdx++
-	if idx >= 16 {
-		idx = 15 // clamp — shouldn't happen in practice
+	var idx int
+	if n := len(t.freeIdx); n > 0 {
+		idx = t.freeIdx[n-1]
+		t.freeIdx = t.freeIdx[:n-1]
+	} else {
+		idx = t.nextIdx
+		t.nextIdx++
+		if idx >= 16 {
+			idx = 15 // clamp — shouldn't happen in practice
+		}
 	}
 	t.dcIndex[dcHandle] = idx
 	return idx
+}
+
+// ReleaseDC frees the trace slot for a removed DataChannel so the handle map
+// does not grow unboundedly across DC churn. Idempotent.
+func (t *PionTrace) ReleaseDC(dcHandle string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if idx, ok := t.dcIndex[dcHandle]; ok {
+		delete(t.dcIndex, dcHandle)
+		if idx < 15 { // slot 15 is the shared clamp slot; never recycle it twice
+			t.freeIdx = append(t.freeIdx, idx)
+		}
+	}
 }
 
 // snapshot is a point-in-time copy for delta computation.

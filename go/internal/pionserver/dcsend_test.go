@@ -166,10 +166,10 @@ func TestDCSend_LargeThenSmallAcks(t *testing.T) {
 // increasing msgIDs (and a 1-byte payload encoding the msgID-mod-256 so the
 // receiver can verify on-the-wire order independently of the ack stream),
 // then asserts both:
-//   1. dc:send acks come back with msgIDs in the original order (sender side
-//      ran dc.Send in order)
-//   2. peer's OnMessage events deliver payloads in the original order (the
-//      receiver actually saw them in order on the wire)
+//  1. dc:send acks come back with msgIDs in the original order (sender side
+//     ran dc.Send in order)
+//  2. peer's OnMessage events deliver payloads in the original order (the
+//     receiver actually saw them in order on the wire)
 func TestDCSend_WithinDCOrdering_FIFO(t *testing.T) {
 	th := newTestHarness()
 	_, _, dcHandle := th.createConnectedPCPair(t)

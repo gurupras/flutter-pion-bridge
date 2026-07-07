@@ -193,9 +193,9 @@ func TestApplySettingsEngine_UnknownKeysIgnored(t *testing.T) {
 
 func TestToInt(t *testing.T) {
 	cases := []struct {
-		input    interface{}
-		wantVal  int64
-		wantOk   bool
+		input   interface{}
+		wantVal int64
+		wantOk  bool
 	}{
 		{int(42), 42, true},
 		{int8(8), 8, true},

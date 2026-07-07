@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -45,6 +46,23 @@ func main() {
 
 	// Flush stdout
 	os.Stdout.Sync()
+
+	// Exit when the host process dies. When the host gave us a stdin PIPE it
+	// holds the write end; reading blocks until EOF (host closed it or
+	// crashed), at which point we exit instead of lingering as an orphan.
+	//
+	// Guard on the fd actually being a pipe: the Linux GTK plugin spawns us
+	// with stdin as /dev/null (a character device), where reading returns
+	// EOF immediately — an unconditional watchdog would kill a healthy
+	// server the instant it started.
+	go func() {
+		fi, err := os.Stdin.Stat()
+		if err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
+			return // stdin is not a held pipe; no parent-death signal here
+		}
+		io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}()
 
 	// Block forever
 	select {}

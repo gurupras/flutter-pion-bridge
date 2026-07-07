@@ -1,6 +1,7 @@
 package pionserver
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -71,16 +72,54 @@ func NewServer(registry *Registry, token string) *Server {
 	}
 }
 
-// enqueueMessage serialises msg to msgpack and pushes the bytes onto writeCh.
-// Multiple goroutines may call this concurrently; the actual WebSocket write
-// is performed by the single writer goroutine, so no lock is needed here.
-func enqueueMessage(writeCh chan<- []byte, msg Message) error {
+// errConnClosed is returned by connWriter.enqueue once the connection is
+// torn down. Producers (pion callbacks, per-DC send goroutines) treat it as
+// "drop the frame" — never as a reason to panic or block.
+var errConnClosed = errors.New("connection closed")
+
+// connWriter owns the outbound side of one WebSocket connection. Producers
+// enqueue pre-serialised frames; a single writer goroutine performs the
+// actual conn.WriteMessage calls. close() is idempotent and unblocks every
+// producer, so frames enqueued after teardown are dropped instead of
+// panicking (the pre-fix behaviour was `close(writeCh)` + raw channel sends,
+// which crashed the process when a dc:send ack raced a disconnect).
+type connWriter struct {
+	ch   chan []byte
+	done chan struct{}
+	once sync.Once
+}
+
+func newConnWriter(size int) *connWriter {
+	return &connWriter{
+		ch:   make(chan []byte, size),
+		done: make(chan struct{}),
+	}
+}
+
+// close marks the connection dead and unblocks all producers and the writer.
+// Safe to call from any goroutine, any number of times.
+func (w *connWriter) close() {
+	w.once.Do(func() { close(w.done) })
+}
+
+// enqueue serialises msg and queues it for the writer goroutine. Returns
+// errConnClosed (without blocking) once the connection is torn down.
+func (w *connWriter) enqueue(msg Message) error {
 	data, err := msgpack.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("msgpack marshal error: %w", err)
 	}
-	writeCh <- data // blocks only when the channel is full
-	return nil
+	select {
+	case <-w.done:
+		return errConnClosed
+	default:
+	}
+	select {
+	case w.ch <- data:
+		return nil
+	case <-w.done:
+		return errConnClosed
+	}
 }
 
 // handleWebSocket is the HTTP handler for WebSocket upgrades.
@@ -99,11 +138,24 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
+	cw := newConnWriter(writeChanSize)
+	defer cw.close()
+
 	// Dedicated writer goroutine — the only place conn.WriteMessage is called.
-	// All other goroutines push pre-serialised frames onto writeCh.
-	writeCh := make(chan []byte, writeChanSize)
+	// All other goroutines enqueue pre-serialised frames via cw.enqueue. On
+	// write error the writer closes both cw (unblocking all producers) and the
+	// conn (unblocking the read loop) so a dead writer can never wedge the
+	// connection.
 	go func() {
-		for frame := range writeCh {
+		defer cw.close()
+		defer conn.Close()
+		for {
+			var frame []byte
+			select {
+			case <-cw.done:
+				return
+			case frame = <-cw.ch:
+			}
 			if Trace.Enabled() {
 				t0 := time.Now()
 				if err := conn.WriteMessage(websocket.BinaryMessage, frame); err != nil {
@@ -130,19 +182,24 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Start ping ticker — uses WriteControl which has its own internal lock in
-	// gorilla/websocket and does not need to go through writeCh.
+	// gorilla/websocket and does not need to go through the writer goroutine.
 	pingTicker := time.NewTicker(pingInterval)
 	defer pingTicker.Stop()
 	go func() {
-		for range pingTicker.C {
-			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+		for {
+			select {
+			case <-cw.done:
 				return
+			case <-pingTicker.C:
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+					return
+				}
 			}
 		}
 	}()
 
 	handler := NewHandler(s.registry, func(event Message) {
-		if err := enqueueMessage(writeCh, event); err != nil {
+		if err := cw.enqueue(event); err != nil && err != errConnClosed {
 			log.Printf("Error enqueuing event: %v", err)
 		}
 	})
@@ -151,7 +208,8 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		messageType, data, err := conn.ReadMessage()
 		if err != nil {
 			log.Printf("WebSocket read error: %v", err)
-			close(writeCh)
+			// cw.close() (deferred) unblocks producers; the channel itself is
+			// never closed so late acks/events are dropped, not panics.
 			return
 		}
 		if Trace.Enabled() {
@@ -161,7 +219,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		if messageType != websocket.BinaryMessage {
 			errMsg := ErrorResponse(0, "INVALID_REQUEST", "expected binary message", false, "")
-			enqueueMessage(writeCh, errMsg)
+			if err := cw.enqueue(errMsg); err != nil && err != errConnClosed {
+				log.Printf("Error enqueuing error response: %v", err)
+			}
 			continue
 		}
 
@@ -171,7 +231,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				if r := recover(); r != nil {
 					log.Printf("PANIC recovered: %v", r)
 					errMsg := ErrorResponse(0, "FATAL_PANIC", fmt.Sprintf("%v", r), true, "")
-					enqueueMessage(writeCh, errMsg)
+					cw.enqueue(errMsg)
 				}
 			}()
 
@@ -180,7 +240,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			if err := msgpack.Unmarshal(data, msg); err != nil {
 				errMsg := ErrorResponse(0, "INVALID_REQUEST", "invalid msgpack: "+err.Error(), false, "")
-				enqueueMessage(writeCh, errMsg)
+				if err := cw.enqueue(errMsg); err != nil && err != errConnClosed {
+					log.Printf("Error enqueuing error response: %v", err)
+				}
 				return
 			}
 
@@ -191,7 +253,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			response := handler.HandleMessage(msg)
 			if response.Type != "" {
-				if err := enqueueMessage(writeCh, response); err != nil {
+				if err := cw.enqueue(response); err != nil && err != errConnClosed {
 					log.Printf("Error enqueuing response: %v", err)
 				}
 			}

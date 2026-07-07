@@ -20,8 +20,9 @@ type StartResult struct {
 }
 
 var (
-	mu       sync.Mutex
-	listener net.Listener
+	mu          sync.Mutex
+	listener    net.Listener
+	stopCleanup func()
 )
 
 // Start starts the PionBridge WebSocket server on an ephemeral loopback port.
@@ -36,15 +37,17 @@ func Start() (*StartResult, error) {
 	}
 
 	registry := pionserver.NewRegistry()
-	registry.StartCleanup(30*time.Second, 300*time.Second)
+	stop := registry.StartCleanup(30*time.Second, 300*time.Second)
 
 	token := strings.ReplaceAll(uuid.New().String(), "-", "")
 	server := pionserver.NewServer(registry, token)
 
 	l, err := server.ListenAndServe()
 	if err != nil {
+		stop()
 		return nil, err
 	}
+	stopCleanup = stop
 
 	listener = l
 	port := l.Addr().(*net.TCPAddr).Port
@@ -61,6 +64,10 @@ func Stop() error {
 		return nil
 	}
 
+	if stopCleanup != nil {
+		stopCleanup()
+		stopCleanup = nil
+	}
 	err := listener.Close()
 	listener = nil
 	return err

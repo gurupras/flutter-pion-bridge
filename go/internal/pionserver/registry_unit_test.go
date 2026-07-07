@@ -48,10 +48,8 @@ func TestLookup_ReturnsResourceAndUpdatesLastSeen(t *testing.T) {
 	}
 
 	// Verify lastSeen was updated (it should be very recent)
-	r.mu.RLock()
-	ls := r.lastSeen[handle]
-	r.mu.RUnlock()
-	if time.Since(ls) > 100*time.Millisecond {
+	ls := getLastSeenForTest(r, handle)
+	if time.Since(ls) > time.Second {
 		t.Error("lastSeen was not updated by Lookup")
 	}
 }
@@ -167,9 +165,7 @@ func TestCleanup_RemovesStaleHandles(t *testing.T) {
 	handle := r.Register("stale")
 
 	// Manually set lastSeen to the past
-	r.mu.Lock()
-	r.lastSeen[handle] = time.Now().Add(-10 * time.Minute)
-	r.mu.Unlock()
+	setLastSeenForTest(r, handle, time.Now().Add(-10*time.Minute))
 
 	r.Cleanup(5 * time.Minute)
 

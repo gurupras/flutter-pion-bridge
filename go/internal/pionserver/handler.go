@@ -25,12 +25,21 @@ func NewHandler(registry *Registry, sendEvent func(Message)) *Handler {
 
 // NewHandlerWithConfig creates a new message handler with the provided DC
 // configuration applied to every DataChannel created through this Handler.
+//
+// Outbound events count as TTL activity: a receive-only DataChannel produces
+// no inbound RPCs, so without the Touch here the cleanup sweeper would reap
+// a healthy in-use connection.
 func NewHandlerWithConfig(registry *Registry, sendEvent func(Message), cfg DCConfig) *Handler {
 	return &Handler{
-		registry:  registry,
-		sendEvent: sendEvent,
-		api:       webrtc.NewAPI(),
-		dcConfig:  cfg,
+		registry: registry,
+		sendEvent: func(m Message) {
+			if m.Handle != "" {
+				registry.Touch(m.Handle)
+			}
+			sendEvent(m)
+		},
+		api:      webrtc.NewAPI(),
+		dcConfig: cfg,
 	}
 }
 
@@ -68,9 +77,6 @@ func (h *Handler) startDCSendGoroutine(dc *webrtc.DataChannel, dcHandle string) 
 		h.sendEvent(Event("event:bufferedAmountLow", dcHandle, map[string]interface{}{}))
 	})
 
-	idx := Trace.DCIdx(dcHandle)
-	sendEvent := h.sendEvent
-
 	go func() {
 		for {
 			select {
@@ -80,34 +86,38 @@ func (h *Handler) startDCSendGoroutine(dc *webrtc.DataChannel, dcHandle string) 
 				if !ok {
 					return
 				}
-				h.runDCSend(dc, dcHandle, idx, state, w, sendEvent)
+				h.runDCSend(dc, dcHandle, state, w)
 			}
 		}
 	}()
 }
 
-// runDCSend issues a single dc.Send, waits for the buffered amount to drop
-// below the threshold, and emits the ack/error.  Factored out for clarity.
+// runDCSend issues a single dc.Send/dc.SendText, waits for the buffered
+// amount to drop below the threshold, and emits the ack/error.  The ack goes
+// through w.sendEvent — the connection that issued this dc:send — never the
+// (possibly closed) connection that created the DC.
 func (h *Handler) runDCSend(
 	dc *webrtc.DataChannel,
 	dcHandle string,
-	idx int,
 	state *DCSendState,
 	w dcSendWork,
-	sendEvent func(Message),
 ) {
+	sendEvent := w.sendEvent
 	if LifecycleLogEnabled() {
 		lifeLogf("dc.Send pre  dc=%s msgID=%d len=%d buffered=%d", dcHandle, w.msgID, len(w.data), dc.BufferedAmount())
 	}
 	var sendErr error
 	if Trace.Enabled() {
+		// Resolve the trace slot lazily so no slot is allocated (and leaked)
+		// for channels created while tracing is off.
+		idx := Trace.DCIdx(dcHandle)
 		t0 := time.Now()
-		sendErr = dc.Send(w.data)
+		sendErr = h.doSend(dc, w)
 		atomic.AddInt64(&Trace.DCFrames[idx], 1)
 		atomic.AddInt64(&Trace.DCBytes[idx], int64(len(w.data)))
 		atomic.AddInt64(&Trace.DCNs[idx], time.Since(t0).Nanoseconds())
 	} else {
-		sendErr = dc.Send(w.data)
+		sendErr = h.doSend(dc, w)
 	}
 	if LifecycleLogEnabled() {
 		lifeLogf("dc.Send post dc=%s msgID=%d err=%v buffered=%d", dcHandle, w.msgID, sendErr, dc.BufferedAmount())
@@ -140,6 +150,14 @@ func (h *Handler) runDCSend(
 	sendEvent(AckResponse("dc:send", w.msgID, dcHandle, nil))
 }
 
+// doSend dispatches one work unit to the right pion send call.
+func (h *Handler) doSend(dc *webrtc.DataChannel, w dcSendWork) error {
+	if w.isText {
+		return dc.SendText(w.text)
+	}
+	return dc.Send(w.data)
+}
+
 // stopDCSendGoroutine removes the send state for dcHandle and closes it,
 // causing the goroutine to exit cleanly.  Safe to call from any handler —
 // the state lives on the registry, not the handler.
@@ -147,6 +165,7 @@ func (h *Handler) stopDCSendGoroutine(dcHandle string) {
 	if state, ok := h.registry.RemoveDCSendState(dcHandle); ok {
 		state.closeState()
 	}
+	Trace.ReleaseDC(dcHandle)
 }
 
 // HandleMessage routes a message to the appropriate handler.
@@ -505,7 +524,13 @@ func (h *Handler) handlePCAddIce(msg *Message) Message {
 		return ErrorResponse(msg.ID, "INVALID_REQUEST", "missing candidate", false, msg.Handle)
 	}
 
-	sdpMid, _ := msg.Data["sdp_mid"].(string)
+	// Only set SDPMid/SDPMLineIndex when the client actually provided them —
+	// a non-nil pointer to "" is not the same as absent and can make pion
+	// mis-associate the candidate.
+	var sdpMid *string
+	if v, ok := msg.Data["sdp_mid"].(string); ok {
+		sdpMid = &v
+	}
 	var sdpMLineIndex *uint16
 	if idx, ok := toUint16(msg.Data["sdp_mline_index"]); ok {
 		sdpMLineIndex = &idx
@@ -513,7 +538,7 @@ func (h *Handler) handlePCAddIce(msg *Message) Message {
 
 	init := webrtc.ICECandidateInit{
 		Candidate:     candidateStr,
-		SDPMid:        &sdpMid,
+		SDPMid:        sdpMid,
 		SDPMLineIndex: sdpMLineIndex,
 	}
 
@@ -578,10 +603,10 @@ func (h *Handler) handlePCCreateDc(msg *Message) Message {
 }
 
 func (h *Handler) handleDCSend(msg *Message) Message {
-	// Binary path: enqueue onto the per-DC goroutine; ack is sent
-	// asynchronously when pion's send buffer drains below the low-water mark.
-	// Text path: handled inline (control-channel traffic, low volume) and
-	// returns a synchronous ack.
+	// Both text and binary sends are enqueued onto the per-DC goroutine so a
+	// single FIFO covers the whole channel — a text frame issued after queued
+	// binary frames must not overtake them (it used to, when text ran inline
+	// in the read loop). The ack is emitted asynchronously by the goroutine.
 	state, ok := h.registry.LookupDCSendState(msg.Handle)
 	if !ok {
 		// No registered state — DC handle is unknown (or already torn down).
@@ -589,56 +614,75 @@ func (h *Handler) handleDCSend(msg *Message) Message {
 		return ErrorResponse(msg.ID, "NOT_FOUND", "dc:send on unknown handle: "+msg.Handle, false, msg.Handle)
 	}
 
+	var work dcSendWork
 	switch payload := msg.Data["data"].(type) {
 	case []byte:
-		// Copy before returning msg to the pool — msg.Data may be reused.
-		buf := make([]byte, len(payload))
-		copy(buf, payload)
-		if Trace.Enabled() {
-			idx := Trace.DCIdx(msg.Handle)
-			depth := int64(len(state.work))
-			if cur := atomic.LoadInt64(&Trace.DCQDepth[idx]); depth > cur {
-				atomic.StoreInt64(&Trace.DCQDepth[idx], depth)
-			}
-		}
-		// Enqueue synchronously so that back-to-back dc:send calls on the
-		// same DC reach state.work in WebSocket arrival order.  Cross-DC
-		// isolation is preserved because each DC has its own work channel;
-		// the configurable queue depth + Dart-side ack pacing keeps the
-		// read-loop block window negligible under normal load.
-		if LifecycleLogEnabled() {
-			lifeLogf("dc:send enqueue dc=%s msgID=%d len=%d workQ=%d", msg.Handle, msg.ID, len(buf), len(state.work))
-		}
+		// Safe to hand off without copying: the message pool only recycles
+		// the Message struct and its map (putMessage deletes keys, never
+		// touches values), and the payload slice itself is a fresh
+		// allocation unique to this message — gorilla's ReadMessage returns
+		// a new frame buffer and msgpack decodes bin into a newly allocated
+		// slice. Copying here would add a second full pass over every
+		// uploaded chunk (~64 KB memcpy + GC churn per send).
 		awaitDrain := true
 		if v, ok2 := msg.Data["await_drain"].(bool); ok2 {
 			awaitDrain = v
 		}
-		select {
-		case state.work <- dcSendWork{data: buf, msgID: msg.ID, awaitDrain: awaitDrain}:
-		case <-state.done:
-			if LifecycleLogEnabled() {
-				lifeLogf("dc:send enqueue-fail (closed) dc=%s msgID=%d", msg.Handle, msg.ID)
-			}
-			h.sendEvent(ErrorResponse(msg.ID, "DC_CLOSED", "data channel closed before send", false, msg.Handle))
-		}
-		// No synchronous response — ack is emitted by the per-DC goroutine
-		// after dc.Send + buffered-amount-low.
-		return Message{}
+		work = dcSendWork{data: payload, msgID: msg.ID, handle: msg.Handle, awaitDrain: awaitDrain}
 	case string:
-		dc, errMsg, ok2 := h.lookupDC(msg)
-		if !ok2 {
-			return errMsg
-		}
-		if err := dc.SendText(payload); err != nil {
-			h.sendEvent(Event("event:dc:error", msg.Handle, map[string]interface{}{
-				"error": err.Error(),
-			}))
-			return ErrorResponse(msg.ID, "DC_SEND_ERROR", err.Error(), false, msg.Handle)
-		}
-		return AckResponse("dc:send", msg.ID, msg.Handle, nil)
+		// Text is control-channel traffic: ack as soon as SendText returns,
+		// no buffered-amount-low wait (matches the previous inline semantics).
+		work = dcSendWork{text: payload, isText: true, msgID: msg.ID, handle: msg.Handle, awaitDrain: false}
 	default:
 		return ErrorResponse(msg.ID, "INVALID_REQUEST", "data must be string or binary", false, msg.Handle)
 	}
+	// Route the ack/error to THIS connection — the one issuing the send.
+	work.sendEvent = h.sendEvent
+
+	if Trace.Enabled() {
+		idx := Trace.DCIdx(msg.Handle)
+		depth := int64(len(state.work))
+		if cur := atomic.LoadInt64(&Trace.DCQDepth[idx]); depth > cur {
+			atomic.StoreInt64(&Trace.DCQDepth[idx], depth)
+		}
+	}
+	// Enqueue synchronously so that back-to-back dc:send calls on the
+	// same DC reach state.work in WebSocket arrival order.  Cross-DC
+	// isolation is preserved because each DC has its own work channel;
+	// the configurable queue depth + Dart-side ack pacing keeps the
+	// read-loop block window negligible under normal load.
+	if LifecycleLogEnabled() {
+		lifeLogf("dc:send enqueue dc=%s msgID=%d len=%d isText=%v workQ=%d", msg.Handle, msg.ID, len(work.data), work.isText, len(state.work))
+	}
+	select {
+	case state.work <- work:
+		// The state may have closed (and closeState's drain already finished)
+		// between our enqueue and now — a `select` with both cases ready picks
+		// randomly, so enqueue can succeed after `done` is closed. If so,
+		// reclaim one queued item and fail it: it is ours or an equivalent
+		// abandoned one, and channel receives are exclusive so nothing is
+		// double-answered. If the drain (or the sender) already consumed it,
+		// the inner receive misses and the item was answered elsewhere.
+		select {
+		case <-state.done:
+			select {
+			case w := <-state.work:
+				if w.sendEvent != nil {
+					w.sendEvent(ErrorResponse(w.msgID, "DC_CLOSED", "data channel closed before send", false, w.handle))
+				}
+			default:
+			}
+		default:
+		}
+	case <-state.done:
+		if LifecycleLogEnabled() {
+			lifeLogf("dc:send enqueue-fail (closed) dc=%s msgID=%d", msg.Handle, msg.ID)
+		}
+		h.sendEvent(ErrorResponse(msg.ID, "DC_CLOSED", "data channel closed before send", false, msg.Handle))
+	}
+	// No synchronous response — ack is emitted by the per-DC goroutine
+	// after the send (and, for awaitDrain, buffered-amount-low).
+	return Message{}
 }
 
 func (h *Handler) handleDCSetBufferedAmountLowThreshold(msg *Message) Message {
@@ -737,7 +781,6 @@ func toUint64(v interface{}) (uint64, bool) {
 		return 0, false
 	}
 }
-
 
 func toUint16(v interface{}) (uint16, bool) {
 	switch n := v.(type) {

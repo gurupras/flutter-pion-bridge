@@ -31,8 +31,16 @@ var DefaultDCConfig = DCConfig{
 // per-DC sender goroutine.
 type dcSendWork struct {
 	data       []byte
+	text       string
+	isText     bool // send via dc.SendText(text) instead of dc.Send(data)
 	msgID      int
-	awaitDrain bool // if false, ack immediately after dc.Send without waiting for buffer drain
+	handle     string // DC handle, for error responses emitted after teardown
+	awaitDrain bool   // if false, ack immediately after dc.Send without waiting for buffer drain
+	// sendEvent routes the ack/error back to the connection that ISSUED this
+	// dc:send. The per-DC goroutine must not use the creating connection's
+	// sink: with cross-isolate use the creator may be long gone while another
+	// connection is still sending.
+	sendEvent func(Message)
 }
 
 // DCSendState owns the per-DataChannel send queue, low-water condition
@@ -66,12 +74,30 @@ func newDCSendState(cfg DCConfig) *DCSendState {
 // closeState marks the state shut down, broadcasts the cond so the sender
 // goroutine wakes from any in-progress wait, and is safe to call multiple
 // times (cascade delete + explicit close + dc.OnClose all converge here).
+//
+// It then fails any work still queued: the sender goroutine exits on `done`
+// without draining, so without this each abandoned item's caller would wait
+// on an ack that never comes (hung Dart Future). Receiving here races the
+// sender goroutine for items, but channel receives are exclusive, so every
+// item gets exactly one response — either processed by the sender or failed
+// here. Work enqueued after this drain is handled by handleDCSend's
+// post-enqueue re-check.
 func (s *DCSendState) closeState() {
 	s.closeOnce.Do(func() {
 		close(s.done)
 		s.cond.L.Lock()
 		s.cond.Broadcast()
 		s.cond.L.Unlock()
+		for {
+			select {
+			case w := <-s.work:
+				if w.sendEvent != nil {
+					w.sendEvent(ErrorResponse(w.msgID, "DC_CLOSED", "data channel closed before send", false, w.handle))
+				}
+			default:
+				return
+			}
+		}
 	})
 }
 

@@ -197,8 +197,10 @@ func TestIntegration_FullFlow(t *testing.T) {
 	ic, cleanup := startIntegration(t)
 	defer cleanup()
 
-	// 1. Init
-	resp := ic.send(Message{Type: "init", ID: ic.getID(), Data: map[string]interface{}{}})
+	// 1. Init (loopback-only ICE keeps the connection setup deterministic)
+	resp := ic.send(Message{Type: "init", ID: ic.getID(), Data: map[string]interface{}{
+		"settings_engine": loopbackSettingsEngine(),
+	}})
 	if resp.Type != "init:ack" {
 		t.Fatalf("init failed: %s %v", resp.Type, resp.Data)
 	}
@@ -285,11 +287,21 @@ func TestIntegration_FullFlow(t *testing.T) {
 		t.Fatalf("setRemoteDesc (offerer) failed: %s %v", setRemoteResp2.Type, setRemoteResp2.Data)
 	}
 
-	// 7. Wait for ICE candidates and exchange them
-	time.Sleep(500 * time.Millisecond)
-	events := ic.getEvents()
-	for _, e := range events {
-		if e.Type == "event:iceCandidate" {
+	// 7. Trickle ICE: exchange candidates as they arrive until the offerer's
+	// DC opens (fixed sleep + one exchange pass was flaky on hosts with many
+	// network interfaces, where gathering outlives the sleep).
+	iceDeadline := time.Now().Add(60 * time.Second)
+	seenEvents := 0
+	dcOpened := false
+	for !dcOpened && time.Now().Before(iceDeadline) {
+		evs := ic.getEvents()
+		for _, e := range evs[seenEvents:] {
+			if e.Type == "event:dataChannelOpen" && e.Handle == offererDcHandle {
+				dcOpened = true
+			}
+			if e.Type != "event:iceCandidate" {
+				continue
+			}
 			candidate, _ := e.Data["candidate"].(string)
 			sdpMid, _ := e.Data["sdp_mid"].(string)
 			sdpMLineIndex := 0
@@ -321,11 +333,17 @@ func TestIntegration_FullFlow(t *testing.T) {
 				t.Logf("addIce warning: %v", addIceResp.Data)
 			}
 		}
+		seenEvents = len(evs)
+		if !dcOpened {
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	if !dcOpened {
+		t.Fatal("offerer DC did not open within 60s (ICE/SCTP never established)")
 	}
 
 	// 8. Check for connectionStateChange events
-	time.Sleep(2 * time.Second)
-	events = ic.getEvents()
+	events := ic.getEvents()
 	connectedCount := 0
 	for _, e := range events {
 		if e.Type == "event:connectionStateChange" {
@@ -500,6 +518,14 @@ func TestIntegration_FullFlow(t *testing.T) {
 func setupConnectedDCPair(t *testing.T, ic *integrationClient) (offererDcHandle string) {
 	t.Helper()
 
+	// Loopback-only ICE: fast and deterministic for same-process peers.
+	initResp := ic.send(Message{Type: "init", ID: ic.getID(), Data: map[string]interface{}{
+		"settings_engine": loopbackSettingsEngine(),
+	}})
+	if initResp.Type != "init:ack" {
+		t.Fatalf("init failed: %s %v", initResp.Type, initResp.Data)
+	}
+
 	offererResp := ic.send(Message{Type: "pc:create", ID: ic.getID(), Data: map[string]interface{}{}})
 	if offererResp.Type != "pc:create:ack" {
 		t.Fatalf("create offerer: %s", offererResp.Type)
@@ -537,40 +563,49 @@ func setupConnectedDCPair(t *testing.T, ic *integrationClient) (offererDcHandle 
 	ic.send(Message{Type: "pc:setRemoteDesc", ID: ic.getID(), Handle: offerer,
 		Data: map[string]interface{}{"sdp": answerSdp, "type": "answer"}})
 
-	time.Sleep(500 * time.Millisecond)
-
-	for _, e := range ic.getEvents() {
-		if e.Type != "event:iceCandidate" {
-			continue
-		}
-		candidate, _ := e.Data["candidate"].(string)
-		sdpMid, _ := e.Data["sdp_mid"].(string)
-		sdpMlineIndex := 0
-		if idx, ok := e.Data["sdp_mline_index"]; ok {
-			switch v := idx.(type) {
-			case int8:
-				sdpMlineIndex = int(v)
-			case int64:
-				sdpMlineIndex = int(v)
-			case uint64:
-				sdpMlineIndex = int(v)
+	// Trickle ICE: forward candidates as they arrive until SCTP is up (the
+	// offerer's DC fires dataChannelOpen). A single exchange pass after a
+	// fixed sleep was flaky on hosts with many interfaces, where gathering
+	// takes longer than the sleep.
+	deadline := time.Now().Add(60 * time.Second)
+	seen := 0
+	for time.Now().Before(deadline) {
+		events := ic.getEvents()
+		for _, e := range events[seen:] {
+			if e.Type == "event:dataChannelOpen" && e.Handle == offererDcHandle {
+				return offererDcHandle
 			}
+			if e.Type != "event:iceCandidate" {
+				continue
+			}
+			candidate, _ := e.Data["candidate"].(string)
+			sdpMid, _ := e.Data["sdp_mid"].(string)
+			sdpMlineIndex := 0
+			if idx, ok := e.Data["sdp_mline_index"]; ok {
+				switch v := idx.(type) {
+				case int8:
+					sdpMlineIndex = int(v)
+				case int64:
+					sdpMlineIndex = int(v)
+				case uint64:
+					sdpMlineIndex = int(v)
+				}
+			}
+			target := answerer
+			if e.Handle == answerer {
+				target = offerer
+			}
+			ic.send(Message{
+				Type: "pc:addIce", ID: ic.getID(), Handle: target,
+				Data: map[string]interface{}{
+					"candidate": candidate, "sdp_mid": sdpMid, "sdp_mline_index": sdpMlineIndex,
+				},
+			})
 		}
-		target := answerer
-		if e.Handle == answerer {
-			target = offerer
-		}
-		ic.send(Message{
-			Type: "pc:addIce", ID: ic.getID(), Handle: target,
-			Data: map[string]interface{}{
-				"candidate": candidate, "sdp_mid": sdpMid, "sdp_mline_index": sdpMlineIndex,
-			},
-		})
+		seen = len(events)
+		time.Sleep(20 * time.Millisecond)
 	}
-
-	// Wait for SCTP to establish
-	time.Sleep(2 * time.Second)
-
+	t.Fatalf("DataChannel did not open within 60s (ICE/SCTP never established)")
 	return offererDcHandle
 }
 

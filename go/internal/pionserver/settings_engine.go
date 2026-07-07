@@ -46,6 +46,17 @@ import (
 //
 //	String:
 //	  multicast_dns_host_name → SetMulticastDNSHostName
+//
+//	Lists:
+//	  interface_whitelist ([]string) → SetInterfaceFilter (only the named
+//	      network interfaces are used for ICE gathering, e.g. ["lo"] or
+//	      ["eth0", "wlan0"]). Function-valued filters cannot cross the wire,
+//	      but a name whitelist can.
+//
+//	Boolean:
+//	  include_loopback_candidate → SetIncludeLoopbackCandidate (required in
+//	      combination with interface_whitelist: ["lo"] for loopback-only ICE,
+//	      since loopback candidates are excluded by default)
 func applySettingsEngine(se *webrtc.SettingEngine, cfg map[string]interface{}) error {
 	// --- Boolean flags ---
 	if v, ok := cfg["disable_active_tcp"].(bool); ok {
@@ -153,6 +164,22 @@ func applySettingsEngine(se *webrtc.SettingEngine, cfg map[string]interface{}) e
 	// --- String settings ---
 	if v, ok := cfg["multicast_dns_host_name"].(string); ok && v != "" {
 		se.SetMulticastDNSHostName(v)
+	}
+
+	// --- Interface whitelist ---
+	if v, ok := cfg["include_loopback_candidate"].(bool); ok {
+		se.SetIncludeLoopbackCandidate(v)
+	}
+	if raw, ok := cfg["interface_whitelist"].([]interface{}); ok {
+		allowed := make(map[string]bool, len(raw))
+		for _, item := range raw {
+			name, isStr := item.(string)
+			if !isStr {
+				return fmt.Errorf("interface_whitelist entries must be strings, got %T", item)
+			}
+			allowed[name] = true
+		}
+		se.SetInterfaceFilter(func(name string) bool { return allowed[name] })
 	}
 
 	return nil

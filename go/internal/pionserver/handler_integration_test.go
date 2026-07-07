@@ -16,6 +16,18 @@ type testHarness struct {
 	events   []Message
 }
 
+// loopbackSettingsEngine is the settings_engine payload used by tests to
+// restrict ICE to the loopback interface. Test peers live in the same
+// process, so host candidates on 127.0.0.1 are all they need — gathering on
+// every interface (Docker/libvirt bridges etc.) made connection setup slow
+// and flaky on multi-interface hosts.
+func loopbackSettingsEngine() map[string]interface{} {
+	return map[string]interface{}{
+		"interface_whitelist":        []interface{}{"lo"},
+		"include_loopback_candidate": true,
+	}
+}
+
 func newTestHarness() *testHarness {
 	th := &testHarness{
 		registry: NewRegistry(),
@@ -24,6 +36,11 @@ func newTestHarness() *testHarness {
 		th.mu.Lock()
 		defer th.mu.Unlock()
 		th.events = append(th.events, event)
+	})
+	// Loopback-only ICE for fast, deterministic in-process connections.
+	th.handler.HandleMessage(&Message{
+		Type: "init", ID: 0,
+		Data: map[string]interface{}{"settings_engine": loopbackSettingsEngine()},
 	})
 	return th
 }
@@ -696,13 +713,22 @@ func (th *testHarness) createConnectedPCPair(t *testing.T) (offererHandle, answe
 		Data: map[string]interface{}{"sdp": answerSdp, "type": "answer"},
 	})
 
-	// Wait for ICE gathering
-	time.Sleep(500 * time.Millisecond)
-
-	// Exchange ICE candidates
-	events := th.getEvents()
-	for _, e := range events {
-		if e.Type == "event:iceCandidate" {
+	// Trickle ICE: forward candidates to the other PC as they are gathered,
+	// until SCTP is up (the offerer's DC fires dataChannelOpen). Fixed
+	// sleep-then-exchange-once was flaky on hosts with many interfaces
+	// (Docker/libvirt bridges): gathering outlives the sleep, so half the
+	// candidates were never exchanged.
+	deadline := time.Now().Add(60 * time.Second)
+	seen := 0
+	for time.Now().Before(deadline) {
+		events := th.getEvents()
+		for _, e := range events[seen:] {
+			if e.Type == "event:dataChannelOpen" && e.Handle == offererDcHandle {
+				return offererHandle, answererHandle, offererDcHandle
+			}
+			if e.Type != "event:iceCandidate" {
+				continue
+			}
 			candidate, _ := e.Data["candidate"].(string)
 			sdpMid, _ := e.Data["sdp_mid"].(string)
 			sdpMlineIndex := 0
@@ -727,11 +753,10 @@ func (th *testHarness) createConnectedPCPair(t *testing.T) (offererHandle, answe
 				},
 			})
 		}
+		seen = len(events)
+		time.Sleep(20 * time.Millisecond)
 	}
-
-	// Wait for SCTP to establish
-	time.Sleep(2 * time.Second)
-
+	t.Fatalf("DataChannel did not open within 60s (ICE/SCTP never established)")
 	return offererHandle, answererHandle, offererDcHandle
 }
 

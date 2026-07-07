@@ -37,4 +37,10 @@ require (
 	golang.org/x/tools v0.44.0 // indirect
 )
 
-replace github.com/pion/sctp v1.9.4 => ./pion-sctp-patched
+// The vendored fork changes exactly two RTO constants for loopback latency
+// (rtoInitial 1000→200ms, rtoMin 1000→100ms in rtx_timer.go). The replace is
+// deliberately UNVERSIONED: a version-pinned replace silently no-ops when the
+// sctp dependency is bumped, reverting the patch without any warning. If you
+// upgrade pion/webrtc (and with it pion/sctp), rebase the two-constant patch
+// onto the new sctp version.
+replace github.com/pion/sctp => ./pion-sctp-patched

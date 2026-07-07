@@ -62,10 +62,12 @@ All messages are maps with fields: `type`, `id`, `handle`, `data`.
 |------|---------|
 | `server.go` | WebSocket server, message read loop, ping/pong keepalive |
 | `handler.go` | Routes message types to handlers; all RPC logic here |
-| `registry.go` | Thread-safe handle→resource map; parent/child tracking (PC→DC); TTL cleanup |
+| `registry.go` | Thread-safe handle→resource map; parent/child tracking (PC→DC); TTL cleanup (connected PCs and their children are spared; activity stamps are per-resource atomics) |
 | `types.go` | `Message` struct, `AckResponse`, `ErrorResponse`, `Event` helpers |
 
-**Serial message processing**: the server's read loop processes one message at a time (no goroutine per message). Event callbacks (ICE, OnMessage, etc.) run on pion's goroutines and call `sendEvent` which acquires `s.mu` before writing.
+**Serial message processing**: the server's read loop processes one message at a time (no goroutine per message). Event callbacks (ICE, OnMessage, etc.) run on pion's goroutines and call `sendEvent`, which enqueues onto a per-connection `connWriter`; a single writer goroutine performs all WebSocket writes. After disconnect, enqueues return `errConnClosed` and are dropped safely (never panic). Outbound events also refresh the handle's TTL (`registry.Touch` walks the parent chain), so receive-only resources are not reaped by the cleanup sweeper.
+
+**SCTP fork**: `go/pion-sctp-patched/` is upstream pion/sctp with exactly two constants changed for loopback latency (`rtoInitial` 1000→200ms, `rtoMin` 1000→100ms in `rtx_timer.go`). The `replace` in `go.mod` is deliberately unversioned; rebase the patch when bumping pion/webrtc.
 
 ### Dart Library (`lib/src/`)
 
@@ -92,7 +94,7 @@ All messages are maps with fields: `type`, `id`, `handle`, `data`.
 | `pc:addIce` | → Go | Add ICE candidate |
 | `pc:createDc` | → Go | Create DataChannel |
 | `pc:close` | → Go | Close PeerConnection |
-| `dc:send` | → Go | Send text or binary data — **fire-and-forget** (no ack); errors arrive as `event:dc:error` |
+| `dc:send` | → Go | Send text or binary data via the per-DC FIFO queue — the ack is **asynchronous** (emitted by the per-DC goroutine, routed to the connection that issued the send). Binary sends with `await_drain` (default) ack only after pion's buffer drains below the low-water mark; text sends ack as soon as `SendText` returns. Errors arrive as an `error` response plus `event:dc:error` |
 | `dc:setBufferedAmountLowThreshold` | → Go | Set backpressure threshold + hook `OnBufferedAmountLow` |
 | `dc:close` | → Go | Close DataChannel |
 | `resource:delete` | → Go | Delete handle from registry |
@@ -127,6 +129,91 @@ Errors from `dc.Send` (e.g. channel not open, connection broken) arrive on `onEr
 2. Write `handleCmdName(msg *Message) Message` following existing patterns
 3. Add a Dart method in the appropriate `lib/src/*.dart` file calling `request('cmd:name', {...})`
 4. Rebuild the AAR: `./scripts/build_android.sh`
+
+## Testing
+
+Run **all** of these layers before declaring a change done — host-green is
+not device-safe (a compiling, host-test-green change has been fatally broken
+on a real device path before):
+
+```bash
+# 1. Go server — plain AND with the race detector
+cd go && go test ./internal/pionserver/ -count=1
+cd go && go test ./internal/pionserver/ -race -count=1
+
+# 2. Vendored pion/sctp fork — it is a SEPARATE module; ./pion-sctp-patched/...
+#    from go/ fails with "does not contain package"
+cd go/pion-sctp-patched && go test . -count=1
+
+# 3. Dart unit + integration (integration spawns the real Go binary)
+flutter test test/unit/ test/integration/
+
+# 4. On-device (example app, full MethodChannel → native → Go stack)
+./scripts/build_android.sh   # ALWAYS rebuild the AAR first after Go changes
+cd example && flutter test --device-id <android-device> integration_test/plugin_integration_test.dart
+./scripts/build_linux.sh
+cd example && flutter test --device-id linux integration_test/plugin_integration_test.dart
+```
+
+### Test conventions (do not regress these)
+
+- **Never use fixed sleeps for ICE setup in tests.** On hosts with many
+  network interfaces (Docker/libvirt bridges), gathering outlives any fixed
+  sleep and a one-shot candidate exchange silently drops candidates —
+  causing flaky-or-failing connections, especially under `-race`. Use
+  trickle ICE (forward candidates as they arrive) and wait on
+  `dataChannelOpen`/`connected` events. All existing helpers
+  (`createConnectedPCPair`, `setupConnectedDCPair`, Dart
+  `TestHarness.createConnectedPair`) already do this.
+- **Test peers use loopback-only ICE** via
+  `settings_engine: {interface_whitelist: ["lo"], include_loopback_candidate: true}`
+  (Dart: `PionSettingsEngine.interfaceWhitelist` / `includeLoopbackCandidate`).
+  In-process peers only need 127.0.0.1; this makes connection setup instant
+  and deterministic on any machine.
+- **Flaky tests are real bugs** — root-cause them; do not retry, loosen, or
+  skip. Bug fixes are test-first: write the regression test, confirm it
+  fails on the unfixed code, then fix.
+
+### Cross-machine benchmark (non-loopback verification)
+
+`tool/remote_bench_client.dart` + `go/cmd/benchpeer` measure connect time,
+bidirectional throughput, and DataChannel RTT across a real network path —
+the one thing the loopback suites cannot cover (and where the SCTP fork's
+lowered RTO floor carries risk):
+
+```bash
+# Remote machine (only needs the static binary):
+cd go && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o benchpeer ./cmd/benchpeer
+scp benchpeer <remote>:… && ssh <remote> ./benchpeer --port 8765
+
+# Local machine (full Dart+Go stack under test):
+cd go && go build -o /tmp/pionbridge . && cd ..
+dart run tool/remote_bench_client.dart --signaling ws://<remote>:8765 --bin /tmp/pionbridge
+```
+
+The client is deliberately source-compatible with v4.0.0 so A/B runs against
+a baseline checkout work (git stash keeps the untracked tool in place).
+There is also `example/integration_test/remote_benchmark_test.dart` for
+running the device side on Android (`SIGNALING` dart-define; the emulator
+reaches the host at 10.0.2.2) — but note the emulator's slirp NAT stalls
+bulk UDP uploads, so prefer a physical device or the pure-Dart client for
+throughput numbers. Reference (wired gigabit LAN, 2026-07): ~800 Mbps up,
+~700 Mbps down, ~0.37 ms DC RTT, ~1s connect.
+
+### Platform semantics to remember
+
+- **Second `startServer` differs by platform**: desktop kills and respawns
+  the Go child process (existing bridges disconnect); Android/iOS restart
+  the in-process gomobile listener and established WebSockets deliberately
+  survive. Tests asserting either behavior must be platform-conditional.
+- **The desktop child's stdin watchdog** (`go/main.go`) exits on stdin EOF
+  only when stdin is a real pipe. Hosts that spawn it with `/dev/null` stdin
+  (the Linux GTK plugin) get no orphan protection — do not "simplify" the
+  pipe check away, it prevented the watchdog from killing healthy servers.
+- The `pion/sctp` fork's tests that assert RFC-default RTO timing pin the
+  upstream value via `pinUpstreamRTO` (the fork lowers rtoInitial/rtoMin —
+  see the comment in `go/go.mod`). New timing-sensitive fork tests likely
+  need the same pin.
 
 ## Git Workflow
 

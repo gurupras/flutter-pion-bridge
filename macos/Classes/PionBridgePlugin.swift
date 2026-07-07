@@ -3,6 +3,7 @@ import FlutterMacOS
 
 public class PionBridgePlugin: NSObject, FlutterPlugin {
     private var serverProcess: Process?
+    private var serverStderr: FileHandle?
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(
@@ -28,6 +29,8 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
         // Kill any running server before starting a new one
         serverProcess?.terminate()
         serverProcess = nil
+        serverStderr?.readabilityHandler = nil
+        serverStderr = nil
 
         // Locate the bundled binary in the plugin's Resources
         guard let binaryPath = Bundle(for: type(of: self))
@@ -49,16 +52,32 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
         process.standardError = stderrPipe
 
         // Drain stderr asynchronously to prevent blocking
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+        let stderrHandle = stderrPipe.fileHandleForReading
+        stderrHandle.readabilityHandler = { handle in
             let line = String(data: handle.availableData, encoding: .utf8) ?? ""
             if !line.isEmpty {
                 NSLog("[PionBridge] stderr: %@", line)
             }
         }
 
+        // Tear down the stderr reader once the process exits so the handler
+        // (and its backing file descriptor) don't leak across restarts.
+        // Foundation invokes this on an arbitrary queue; hop to main before
+        // touching serverStderr, which is otherwise mutated on the platform
+        // thread (startServer/stopServer/deinit).
+        process.terminationHandler = { [weak self] _ in
+            stderrHandle.readabilityHandler = nil
+            DispatchQueue.main.async {
+                if self?.serverStderr === stderrHandle {
+                    self?.serverStderr = nil
+                }
+            }
+        }
+
         do {
             try process.run()
         } catch {
+            stderrHandle.readabilityHandler = nil
             result(FlutterError(
                 code: "SERVER_START_FAILED",
                 message: error.localizedDescription,
@@ -68,23 +87,31 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
         }
 
         serverProcess = process
+        serverStderr = stderrHandle
 
         // Read startup JSON on a background thread with a 10s timeout
         DispatchQueue.global(qos: .userInitiated).async {
             let deadline = Date().addingTimeInterval(10)
             var startupJson: String?
 
-            // Read line by line until we get the first non-empty line or timeout
+            // Accumulate bytes until we see a newline, then parse that line.
+            // The Go server may deliver its startup JSON in more than one chunk,
+            // so treating the first chunk as a complete line can truncate it.
+            var buffer = Data()
             let fileHandle = stdoutPipe.fileHandleForReading
             while Date() < deadline {
                 let data = fileHandle.availableData
-                if !data.isEmpty, let line = String(data: data, encoding: .utf8)?
-                    .trimmingCharacters(in: .whitespacesAndNewlines),
-                    !line.isEmpty {
-                    startupJson = line
+                if data.isEmpty {
+                    Thread.sleep(forTimeInterval: 0.05)
+                    continue
+                }
+                buffer.append(data)
+                if let newlineIndex = buffer.firstIndex(of: 0x0A) {
+                    let lineData = buffer.subdata(in: buffer.startIndex..<newlineIndex)
+                    startupJson = String(data: lineData, encoding: .utf8)?
+                        .trimmingCharacters(in: .whitespacesAndNewlines)
                     break
                 }
-                Thread.sleep(forTimeInterval: 0.05)
             }
 
             DispatchQueue.main.async {
@@ -94,7 +121,12 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
                       let port = obj["port"] as? Int,
                       let token = obj["token"] as? String else {
                     process.terminate()
-                    self.serverProcess = nil
+                    // Only drop tracking if a newer startServer hasn't already
+                    // replaced serverProcess — nilling unconditionally would
+                    // orphan (leak) the newer, healthy child.
+                    if self.serverProcess === process {
+                        self.serverProcess = nil
+                    }
                     result(FlutterError(
                         code: "SERVER_START_FAILED",
                         message: "No valid startup JSON from Go server",
@@ -110,10 +142,14 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
     private func stopServer(result: @escaping FlutterResult) {
         serverProcess?.terminate()
         serverProcess = nil
+        serverStderr?.readabilityHandler = nil
+        serverStderr = nil
         result(nil)
     }
 
     deinit {
         serverProcess?.terminate()
+        serverStderr?.readabilityHandler = nil
+        serverStderr = nil
     }
 }

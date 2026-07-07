@@ -16,6 +16,8 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
         switch call.method {
         case "startServer":
             startServer(result: result)
+        case "stopServer":
+            stopServer(result: result)
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -23,6 +25,10 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
 
     private func startServer(result: @escaping FlutterResult) {
         DispatchQueue.global(qos: .userInitiated).async {
+            // Stop any running server first so hot restart works — Go's
+            // MobileStart returns "server already running" otherwise.
+            MobileStop(nil)
+
             var error: NSError?
             guard let startResult = MobileStart(&error) else {
                 DispatchQueue.main.async {
@@ -40,6 +46,15 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
                     "port": startResult.port,
                     "token": startResult.token
                 ])
+            }
+        }
+    }
+
+    private func stopServer(result: @escaping FlutterResult) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            MobileStop(nil)
+            DispatchQueue.main.async {
+                result(nil)
             }
         }
     }

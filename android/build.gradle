@@ -42,8 +42,14 @@ android {
 
 dependencies {
     implementation 'androidx.annotation:annotation:1.7.1'
-    // gomobile Java bindings — built by scripts/build_android.sh
-    implementation files('libs/pionbridge-go.jar')
+    // gomobile Java bindings — built by scripts/build_android.sh.
+    // builtBy ties the artifact to the buildGoBridge task so every consumer
+    // (including the app's desugar task) gets a proper task dependency;
+    // without it Gradle 8 fails validation with "uses this output of task
+    // ':pion_bridge:buildGoBridge' without declaring a dependency".
+    implementation files('libs/pionbridge-go.jar') {
+        builtBy 'buildGoBridge'
+    }
 }
 
 // ---------------------------------------------------------------------------

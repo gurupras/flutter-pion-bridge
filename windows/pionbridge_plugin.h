@@ -3,6 +3,8 @@
 
 #include <flutter/plugin_registrar_windows.h>
 
+#include <mutex>
+
 namespace pion_bridge {
 
 class PionBridgePlugin : public flutter::Plugin {
@@ -22,6 +24,9 @@ class PionBridgePlugin : public flutter::Plugin {
   void StopServer(
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 
+  // Guards process_handle_ / stdout_read_ against the detached startup thread
+  // racing StopServer and the destructor (double CloseHandle / use-after-close).
+  std::mutex process_mutex_;
   HANDLE process_handle_ = INVALID_HANDLE_VALUE;
   HANDLE stdout_read_ = INVALID_HANDLE_VALUE;
 };

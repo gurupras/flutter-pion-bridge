@@ -17,6 +17,7 @@
 // scripts/build_linux.sh).
 
 import 'dart:async';
+import 'dart:io' show Platform;
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -94,7 +95,8 @@ void main() {
     // -------------------------------------------------------------------------
 
     test(
-        'startServer: second call kills old Go process — first bridge disconnects',
+        'startServer: second call succeeds (hot-restart regression); on '
+        'desktop the old Go process is killed and the first bridge disconnects',
         () async {
       final disconnected = Completer<void>();
       final bridge1 = await makeBridge(
@@ -106,16 +108,29 @@ void main() {
       );
       expect(bridge1.isConnected, isTrue);
 
-      // A second initialize() calls startServer again, which kills the old pid.
-      await makeBridge();
+      // A second initialize() calls startServer again. This must succeed on
+      // every platform — on Android/iOS the plugin stops the in-process
+      // gomobile server before restarting it (a second call used to fail
+      // permanently with "server already running", breaking hot restart).
+      final bridge2 = await makeBridge();
+      expect(bridge2.isConnected, isTrue);
 
-      // The old bridge's WebSocket must close within a few seconds.
-      await disconnected.future.timeout(
-        const Duration(seconds: 5),
-        onTimeout: () =>
-            fail('bridge1 did not disconnect after old Go process was killed'),
-      );
-      expect(bridge1.isConnected, isFalse);
+      if (Platform.isLinux || Platform.isMacOS || Platform.isWindows) {
+        // Desktop spawns the server as a child process, and a restart kills
+        // the old pid — so the first bridge's WebSocket must die with it.
+        await disconnected.future.timeout(
+          const Duration(seconds: 5),
+          onTimeout: () =>
+              fail('bridge1 did not disconnect after old Go process was killed'),
+        );
+        expect(bridge1.isConnected, isFalse);
+      } else {
+        // Mobile restarts the in-process listener; established WebSockets
+        // are deliberately left alive ("closing a PionBridge only closes its
+        // own WebSocket"). The old bridge keeps working against the old
+        // server state until it is closed.
+        expect(bridge1.isConnected, isTrue);
+      }
     });
 
     // -------------------------------------------------------------------------

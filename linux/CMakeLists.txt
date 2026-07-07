@@ -20,11 +20,19 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 
-# Bundle the pionbridge binary alongside the plugin
-set(PIONBRIDGE_BINARY "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/pionbridge")
+# Bundle the pionbridge binary alongside the plugin.
+# build_linux.sh emits amd64 as "pionbridge" and arm64 as "pionbridge_arm64";
+# pick the one matching the target arch and install it AS "pionbridge" so the
+# plugin's runtime lookup (lib/pionbridge) is unchanged on every arch.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+  set(PIONBRIDGE_BINARY "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/pionbridge_arm64")
+else()
+  set(PIONBRIDGE_BINARY "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/pionbridge")
+endif()
 if(EXISTS "${PIONBRIDGE_BINARY}")
   install(FILES "${PIONBRIDGE_BINARY}"
           DESTINATION "lib"
+          RENAME "pionbridge"
           PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
                       GROUP_READ GROUP_EXECUTE
                       WORLD_READ WORLD_EXECUTE)

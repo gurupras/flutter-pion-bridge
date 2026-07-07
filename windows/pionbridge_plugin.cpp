@@ -84,12 +84,18 @@ void PionBridgePlugin::RegisterWithRegistrar(
 PionBridgePlugin::PionBridgePlugin() = default;
 
 PionBridgePlugin::~PionBridgePlugin() {
+  // Note: a detached startup thread may still be running here. The mutex keeps
+  // handle access safe, but the thread also captures `this`; callers must not
+  // destroy the plugin while a startServer is genuinely in flight.
+  std::lock_guard<std::mutex> lock(process_mutex_);
   if (process_handle_ != INVALID_HANDLE_VALUE) {
     TerminateProcess(process_handle_, 0);
     CloseHandle(process_handle_);
+    process_handle_ = INVALID_HANDLE_VALUE;
   }
   if (stdout_read_ != INVALID_HANDLE_VALUE) {
     CloseHandle(stdout_read_);
+    stdout_read_ = INVALID_HANDLE_VALUE;
   }
 }
 
@@ -108,14 +114,17 @@ void PionBridgePlugin::HandleMethodCall(
 void PionBridgePlugin::StartServer(
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   // Kill any existing server
-  if (process_handle_ != INVALID_HANDLE_VALUE) {
-    TerminateProcess(process_handle_, 0);
-    CloseHandle(process_handle_);
-    process_handle_ = INVALID_HANDLE_VALUE;
-  }
-  if (stdout_read_ != INVALID_HANDLE_VALUE) {
-    CloseHandle(stdout_read_);
-    stdout_read_ = INVALID_HANDLE_VALUE;
+  {
+    std::lock_guard<std::mutex> lock(process_mutex_);
+    if (process_handle_ != INVALID_HANDLE_VALUE) {
+      TerminateProcess(process_handle_, 0);
+      CloseHandle(process_handle_);
+      process_handle_ = INVALID_HANDLE_VALUE;
+    }
+    if (stdout_read_ != INVALID_HANDLE_VALUE) {
+      CloseHandle(stdout_read_);
+      stdout_read_ = INVALID_HANDLE_VALUE;
+    }
   }
 
   std::wstring binary_path = GetBinaryPath();
@@ -156,6 +165,7 @@ void PionBridgePlugin::StartServer(
   CloseHandle(stdout_write);  // child has its own copy
 
   if (!ok) {
+    std::lock_guard<std::mutex> lock(process_mutex_);
     CloseHandle(stdout_read_);
     stdout_read_ = INVALID_HANDLE_VALUE;
     result->Error("SERVER_START_FAILED",
@@ -164,16 +174,21 @@ void PionBridgePlugin::StartServer(
   }
 
   CloseHandle(pi.hThread);
-  process_handle_ = pi.hProcess;
+  HANDLE my_process = pi.hProcess;
+  HANDLE h;
+  {
+    std::lock_guard<std::mutex> lock(process_mutex_);
+    process_handle_ = my_process;
+    h = stdout_read_;
+  }
 
   // Read startup JSON with 10s timeout on a background thread
   // (ReadFile can block; we use PeekNamedPipe polling in ReadLineTimeout)
-  HANDLE h = stdout_read_;
   auto shared_result =
       std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>(
           std::move(result));
 
-  std::thread([this, h, shared_result]() {
+  std::thread([this, h, my_process, shared_result]() {
     std::string line = ReadLineTimeout(h, 10000);
 
     // Parse {"port":<int>,"token":"<str>"}
@@ -201,7 +216,11 @@ void PionBridgePlugin::StartServer(
     token = extract_str("token");
 
     if (port == 0 || token.empty()) {
-      if (process_handle_ != INVALID_HANDLE_VALUE) {
+      std::lock_guard<std::mutex> lock(process_mutex_);
+      // Only tear down if this is still the process we launched — a newer
+      // startServer may have already replaced it.
+      if (process_handle_ == my_process &&
+          process_handle_ != INVALID_HANDLE_VALUE) {
         TerminateProcess(process_handle_, 0);
         CloseHandle(process_handle_);
         process_handle_ = INVALID_HANDLE_VALUE;
@@ -222,10 +241,20 @@ void PionBridgePlugin::StartServer(
 
 void PionBridgePlugin::StopServer(
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
-  if (process_handle_ != INVALID_HANDLE_VALUE) {
-    TerminateProcess(process_handle_, 0);
-    CloseHandle(process_handle_);
-    process_handle_ = INVALID_HANDLE_VALUE;
+  {
+    std::lock_guard<std::mutex> lock(process_mutex_);
+    if (process_handle_ != INVALID_HANDLE_VALUE) {
+      TerminateProcess(process_handle_, 0);
+      CloseHandle(process_handle_);
+      process_handle_ = INVALID_HANDLE_VALUE;
+    }
+    // Also release the stdout pipe read handle: StartServer teardown and the
+    // destructor both close it, but a stopServer not followed by another
+    // startServer would otherwise leak it until plugin destruction.
+    if (stdout_read_ != INVALID_HANDLE_VALUE) {
+      CloseHandle(stdout_read_);
+      stdout_read_ = INVALID_HANDLE_VALUE;
+    }
   }
   result->Success();
 }

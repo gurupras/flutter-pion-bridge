@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <chrono>
@@ -23,14 +24,37 @@ struct _PionbridgePlugin {
   gint stdout_fd;
 };
 
+// Guards server_pid/stdout_fd: the start worker runs on a detached thread
+// while dispose/stopServer/a second startServer run on the GTK thread, and
+// unsynchronized access could kill the wrong pid or leak an overwritten one.
+// Static storage (zero-init) so no init/clear lifecycle is needed.
+static std::mutex server_mutex;
+
+// Reaps the child once it exits. Children are spawned with
+// G_SPAWN_DO_NOT_REAP_CHILD and g_spawn_close_pid() does NOT waitpid() on
+// POSIX, so without this watch every killed/exited server would accumulate
+// as a <defunct> zombie for the host process lifetime (one per hot restart).
+// The watch source itself collects the exit status (reaping the process);
+// g_spawn_close_pid here is for portability hygiene only.
+static void child_exited_cb(GPid pid, gint status, gpointer user_data) {
+  g_spawn_close_pid(pid);
+}
+
 G_DEFINE_TYPE(PionbridgePlugin, pionbridge_plugin, g_object_get_type())
 
 static void pionbridge_plugin_dispose(GObject* object) {
   PionbridgePlugin* self = PIONBRIDGE_PLUGIN(object);
-  if (self->server_pid != 0) {
-    kill(self->server_pid, SIGTERM);
-    g_spawn_close_pid(self->server_pid);
-    self->server_pid = 0;
+  {
+    std::lock_guard<std::mutex> lock(server_mutex);
+    if (self->server_pid != 0) {
+      // The child watch added at spawn time reaps it after the kill.
+      kill(self->server_pid, SIGTERM);
+      self->server_pid = 0;
+    }
+    if (self->stdout_fd >= 0) {
+      close(self->stdout_fd);
+      self->stdout_fd = -1;
+    }
   }
   g_clear_object(&self->channel);
   G_OBJECT_CLASS(pionbridge_plugin_parent_class)->dispose(object);
@@ -88,12 +112,58 @@ static std::string read_line_timeout(int fd, int timeout_secs) {
   return line;
 }
 
-static void handle_start_server(PionbridgePlugin* self,
+// Carries the outcome of the background start from the worker thread back to
+// the GTK main thread, where fl_method_call_respond_* must be invoked.
+struct StartServerResult {
+  FlMethodCall* method_call;  // holds a ref; released after responding
+  bool success;
+  int port;
+  std::string token;
+  std::string error_code;
+  std::string error_message;
+};
+
+// Runs on the GTK main thread via g_idle_add to deliver the response.
+static gboolean start_server_respond_idle(gpointer data) {
+  StartServerResult* r = static_cast<StartServerResult*>(data);
+  if (r->success) {
+    g_autoptr(FlValue) result = fl_value_new_map();
+    fl_value_set_string_take(result, "port", fl_value_new_int(r->port));
+    fl_value_set_string_take(result, "token",
+                             fl_value_new_string(r->token.c_str()));
+    fl_method_call_respond_success(r->method_call, result, nullptr);
+  } else {
+    fl_method_call_respond_error(r->method_call, r->error_code.c_str(),
+                                 r->error_message.c_str(), nullptr, nullptr);
+  }
+  g_object_unref(r->method_call);
+  delete r;
+  return G_SOURCE_REMOVE;
+}
+
+// Runs on a background thread: spawns the child and reads its startup line
+// (up to 10s) without blocking the GTK main thread. Responds via g_idle_add.
+static void start_server_worker(PionbridgePlugin* self,
                                  FlMethodCall* method_call) {
-  // Kill any existing server
+  StartServerResult* r = new StartServerResult();
+  r->method_call = method_call;  // ownership of the ref taken by the caller
+  r->success = false;
+
+  auto fail = [&](const char* code, const std::string& message) {
+    r->success = false;
+    r->error_code = code;
+    r->error_message = message;
+    g_idle_add(start_server_respond_idle, r);
+  };
+
+  // Serialize the whole start against dispose/stopServer/other starts.
+  // Two rapid startServer calls must not interleave: the second would
+  // overwrite (and leak) the first's pid mid-spawn.
+  std::lock_guard<std::mutex> lock(server_mutex);
+
+  // Kill any existing server (reaped by its child watch).
   if (self->server_pid != 0) {
     kill(self->server_pid, SIGTERM);
-    g_spawn_close_pid(self->server_pid);
     self->server_pid = 0;
   }
   if (self->stdout_fd >= 0) {
@@ -103,10 +173,8 @@ static void handle_start_server(PionbridgePlugin* self,
 
   std::string binary_path = get_binary_path();
   if (binary_path.empty() || access(binary_path.c_str(), X_OK) != 0) {
-    fl_method_call_respond_error(
-        method_call, "BINARY_NOT_FOUND",
-        ("pionbridge binary not found or not executable at: " + binary_path).c_str(),
-        nullptr, nullptr);
+    fail("BINARY_NOT_FOUND",
+         "pionbridge binary not found or not executable at: " + binary_path);
     return;
   }
 
@@ -129,22 +197,27 @@ static void handle_start_server(PionbridgePlugin* self,
   if (!spawned) {
     std::string msg = error ? error->message : "unknown error";
     g_clear_error(&error);
-    fl_method_call_respond_error(
-        method_call, "SERVER_START_FAILED", msg.c_str(), nullptr, nullptr);
+    fail("SERVER_START_FAILED", msg);
     return;
   }
 
+  // Reap the child whenever it exits (see child_exited_cb).
+  g_child_watch_add(self->server_pid, child_exited_cb, nullptr);
+
   self->stdout_fd = child_stdout;
+
+  auto fail_and_kill = [&](const std::string& message) {
+    kill(self->server_pid, SIGTERM);
+    self->server_pid = 0;
+    close(self->stdout_fd);
+    self->stdout_fd = -1;
+    fail("SERVER_START_FAILED", message);
+  };
 
   // Read the startup JSON line (10s timeout)
   std::string line = read_line_timeout(child_stdout, 10);
   if (line.empty()) {
-    kill(self->server_pid, SIGTERM);
-    g_spawn_close_pid(self->server_pid);
-    self->server_pid = 0;
-    fl_method_call_respond_error(
-        method_call, "SERVER_START_FAILED",
-        "No startup JSON from Go server (timed out)", nullptr, nullptr);
+    fail_and_kill("No startup JSON from Go server (timed out)");
     return;
   }
 
@@ -174,27 +247,35 @@ static void handle_start_server(PionbridgePlugin* self,
   token = extract_str("token");
 
   if (port == 0 || token.empty()) {
-    kill(self->server_pid, SIGTERM);
-    g_spawn_close_pid(self->server_pid);
-    self->server_pid = 0;
-    fl_method_call_respond_error(
-        method_call, "SERVER_START_FAILED",
-        ("Failed to parse startup JSON: " + line).c_str(), nullptr, nullptr);
+    fail_and_kill("Failed to parse startup JSON: " + line);
     return;
   }
 
-  g_autoptr(FlValue) result = fl_value_new_map();
-  fl_value_set_string_take(result, "port", fl_value_new_int(port));
-  fl_value_set_string_take(result, "token", fl_value_new_string(token.c_str()));
-  fl_method_call_respond_success(method_call, result, nullptr);
+  r->success = true;
+  r->port = port;
+  r->token = token;
+  g_idle_add(start_server_respond_idle, r);
+}
+
+static void handle_start_server(PionbridgePlugin* self,
+                                 FlMethodCall* method_call) {
+  // Keep the call alive across the worker thread; the idle callback releases it.
+  g_object_ref(method_call);
+  std::thread(start_server_worker, self, method_call).detach();
 }
 
 static void handle_stop_server(PionbridgePlugin* self,
                                 FlMethodCall* method_call) {
-  if (self->server_pid != 0) {
-    kill(self->server_pid, SIGTERM);
-    g_spawn_close_pid(self->server_pid);
-    self->server_pid = 0;
+  {
+    std::lock_guard<std::mutex> lock(server_mutex);
+    if (self->server_pid != 0) {
+      kill(self->server_pid, SIGTERM);
+      self->server_pid = 0;
+    }
+    if (self->stdout_fd >= 0) {
+      close(self->stdout_fd);
+      self->stdout_fd = -1;
+    }
   }
   fl_method_call_respond_success(method_call, nullptr, nullptr);
 }

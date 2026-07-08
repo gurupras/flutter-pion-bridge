@@ -29,8 +29,9 @@ echo "Building iOS xcframework via gomobile bind …"
 cd "$GO_DIR"
 gomobile bind \
   -target ios \
+  -ldflags="-checklinkname=0" \
   -o "$OUT_DIR/PionBridgeGo.xcframework" \
-  github.com/pion-bridge/server/mobile
+  ./mobile/
 
 echo "  → $OUT_DIR/PionBridgeGo.xcframework"
 echo "iOS build complete."

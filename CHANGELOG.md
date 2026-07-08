@@ -1,5 +1,17 @@
 # Changelog
 
+## 4.1.2
+
+Artifact-only release — no source changes.
+
+- **Rebuilt the bundled macOS binary and iOS xcframework** with the 4.1.1
+  read-path fix; 4.1.1 shipped stale ones (they can only be built on a Mac,
+  which the release machine is not). The xcframework moves from the legacy
+  `Versions/` symlink layout to the flat shallow-bundle layout current
+  gomobile emits.
+- Fixed `scripts/build_ios.sh`: the `gomobile bind` target still pointed at
+  the pre-rename module path and the script could not run.
+
 ## 4.1.1
 
 Performance release — no API or behavior changes.

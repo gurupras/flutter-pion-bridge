@@ -1,0 +1,8 @@
+framework module "PionBridgeGo" {
+	header "ref.h"
+    header "Mobile.objc.h"
+    header "Universe.objc.h"
+    header "PionBridgeGo.h"
+
+    export *
+}

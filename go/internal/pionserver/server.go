@@ -1,6 +1,7 @@
 package pionserver
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"log"
@@ -204,14 +205,29 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	})
 
+	// readBuf is reused for every inbound frame. This is safe because nothing
+	// retains the raw frame past the loop iteration: msgpack.Unmarshal copies
+	// all decoded values out of the input (pinned by
+	// TestMsgpackUnmarshal_CopiesOutOfInputBuffer), and the decoded copy is
+	// what flows into handlers and the per-DC send queues. gorilla's
+	// ReadMessage would instead io.ReadAll into a fresh buffer per frame —
+	// the top allocation site on the bridge at high dc:send rates.
+	var readBuf bytes.Buffer
+
 	for {
-		messageType, data, err := conn.ReadMessage()
+		messageType, reader, err := conn.NextReader()
 		if err != nil {
 			log.Printf("WebSocket read error: %v", err)
 			// cw.close() (deferred) unblocks producers; the channel itself is
 			// never closed so late acks/events are dropped, not panics.
 			return
 		}
+		readBuf.Reset()
+		if _, err := readBuf.ReadFrom(reader); err != nil {
+			log.Printf("WebSocket read error: %v", err)
+			return
+		}
+		data := readBuf.Bytes()
 		if Trace.Enabled() {
 			atomic.AddInt64(&Trace.ReadFrames, 1)
 			atomic.AddInt64(&Trace.ReadBytes, int64(len(data)))

@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.1.1
+
+Performance release — no API or behavior changes.
+
+- **WebSocket read path reuses one buffer per connection**: the Go server's
+  read loop no longer allocates a fresh frame buffer per message
+  (gorilla's `ReadMessage` → `io.ReadAll`, which was the single largest
+  allocation site in the bridge under CPU-bound profiling at ~100k
+  frames/s). It now reads each frame into a reused per-connection
+  `bytes.Buffer` — safe because msgpack decoding copies every value out of
+  the input, a library property now pinned by a regression test that
+  scribbles over the buffer and asserts payload integrity. Measured on the
+  profiling rig at the gigabit CPU ceiling (0 ms/4-connection cell):
+  +14% throughput over 4.1.0, per-frame server allocation down 3.2×
+  (215 KB → 68 KB per 64 KB frame), GC mark share down from ~23% to ~17%.
+
 ## 4.1.0
 
 Bug-fix release from two full-codebase audit rounds, plus hot-path

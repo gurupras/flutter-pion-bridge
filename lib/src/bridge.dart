@@ -138,12 +138,16 @@ class PionBridge {
     List<IceServer>? iceServers,
     String bundlePolicy = 'balanced',
     String rtcpMuxPolicy = 'require',
+    // 'relay' forces ICE to use ONLY relay (TURN) candidates; 'all' (default)
+    // keeps host/srflx/relay. See handler.go handlePCCreate.
+    String iceTransportPolicy = 'all',
     void Function(String)? onLog,
   }) async {
     final response = await _connection.request('pc:create', null, {
       'ice_servers': iceServers?.map((s) => s.toMap()).toList() ?? [],
       'bundle_policy': bundlePolicy,
       'rtcp_mux_policy': rtcpMuxPolicy,
+      'ice_transport_policy': iceTransportPolicy,
     });
 
     return PionPeerConnection(

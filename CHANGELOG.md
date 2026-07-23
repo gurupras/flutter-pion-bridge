@@ -1,5 +1,21 @@
 # Changelog
 
+## 4.2.0
+
+- **`iceTransportPolicy` support.** `PionBridge.createPeerConnection` now takes an
+  `iceTransportPolicy` argument (`'all'` default, or `'relay'`), forwarded to the
+  Go bridge (`ice_transport_policy` in `pc:create`), which sets
+  `webrtc.Configuration.ICETransportPolicy`. `'relay'` forces ICE to gather and
+  use ONLY relay (TURN) candidates — for forcing/proving the TURN data path (e.g.
+  two NAT-permissive emulators whose server-reflexive candidates would otherwise
+  win the ICE race and skip the relay).
+- Rebuilt bundled **linux (amd64+arm64)** and **windows** binaries. Android is
+  rebuilt from source by the consumer's Gradle `buildGoBridge` task, so it needs
+  no committed artifact.
+- **macOS binary / iOS xcframework are NOT yet rebuilt** here (Mac-only build).
+  They ship stale until an artifact-only follow-up rebuilds them on a Mac — same
+  split as 4.1.1 → 4.1.2.
+
 ## 4.1.2
 
 Artifact-only release — no source changes.

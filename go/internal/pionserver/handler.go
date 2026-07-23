@@ -280,6 +280,19 @@ func (h *Handler) handlePCCreate(msg *Message) Message {
 		}
 	}
 
+	// "relay" forces ICE to gather and use ONLY relay (TURN) candidates,
+	// discarding host + server-reflexive ones. Used to prove/force the TURN
+	// data path (e.g. two NAT-permissive emulators whose srflx candidates would
+	// otherwise win). Defaults to "all" (unset) — normal host/srflx/relay.
+	if itp, ok := msg.Data["ice_transport_policy"].(string); ok {
+		switch itp {
+		case "relay":
+			config.ICETransportPolicy = webrtc.ICETransportPolicyRelay
+		case "all":
+			config.ICETransportPolicy = webrtc.ICETransportPolicyAll
+		}
+	}
+
 	pc, err := h.api.NewPeerConnection(config)
 	if err != nil {
 		return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, "")

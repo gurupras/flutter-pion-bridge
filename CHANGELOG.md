@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.2.3
+
+Version-metadata correction. The `4.2.1` commit rebuilt the bundled binaries for
+all platforms (macOS/iOS on a Mac, linux/windows/android via the latest
+gomobile) but shipped without bumping `pubspec.yaml` or this changelog, and was
+never tagged. This release fixes the version metadata so consumers resolve a
+correct, tagged version. No source or binary changes since that rebuild — the
+`iceTransportPolicy` feature landed in 4.2.0.
+
 ## 4.2.0
 
 - **`iceTransportPolicy` support.** `PionBridge.createPeerConnection` now takes an

@@ -1,8 +1,13 @@
 #ifndef FLUTTER_PLUGIN_PIONBRIDGE_PLUGIN_H_
 #define FLUTTER_PLUGIN_PIONBRIDGE_PLUGIN_H_
 
+#include <flutter/encodable_value.h>
+#include <flutter/method_call.h>
+#include <flutter/method_result.h>
 #include <flutter/plugin_registrar_windows.h>
+#include <windows.h>
 
+#include <memory>
 #include <mutex>
 
 namespace pion_bridge {

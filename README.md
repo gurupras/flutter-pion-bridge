@@ -228,6 +228,30 @@ Both isolates can hold a `PionBridge` against the same Go server. Each gets its 
 
 The convenience constructor `PionBridge.initialize()` is unchanged — it now internally calls `startServer()` followed by `connectExisting()`.
 
+## Shared mode (desktop, in-process)
+
+By default the bridge runs as it always has (`PionBridgeMode.websocket`): on desktop the plugin spawns the Go server as a sidecar process and Dart talks to it over a localhost WebSocket. `PionBridgeMode.shared` loads the same server as a shared library inside the app process instead, and passes the same msgpack frames through `dart:ffi` calls:
+
+```dart
+final bridge = await PionBridge.initialize(mode: PionBridgeMode.shared);
+```
+
+- No child process, no listening socket and no token. The Go runtime lives in the app process for its lifetime, so a Go crash is an app crash.
+- It needs no `MethodChannel`, so it can be initialized directly from a worker isolate.
+- There is nothing to reconnect to; the session lasts until `close()`.
+- Linux only for now: `scripts/build_linux.sh` builds `linux/bundle/lib/libpionbridge.so` and the plugin bundles it. Elsewhere, build `go/shared` with `go build -buildmode=c-shared` and pass `sharedLibraryPath`.
+- An app should load one Go shared library. Each carries its own Go runtime, and two runtimes in one process conflict.
+
+Where latency goes. Measured on Linux over loopback (200-byte DataChannel messages at 120 Hz, echoed by a Pion peer, median round trip):
+
+| | UI isolate | Worker isolate |
+|---|---|---|
+| websocket mode | 1.33 ms | 0.26–0.32 ms |
+| shared mode | 1.27 ms | 0.18–0.21 ms |
+| raw pion, Go only | — | 0.10 ms |
+
+Inside Go the bridge adds about 30 µs per message over raw pion (`PROBE=1 go test -run TestProbeLatency ./internal/pionserver`). Most of the remaining millisecond is incurred on Flutter's UI isolate, in either mode. For latency-sensitive traffic, drive the bridge from a worker isolate.
+
 ## Backpressure Handling
 
 When sending large amounts of data over a DataChannel, the native send buffer can fill up faster than the remote peer can receive. To avoid dropping packets or blocking the sender, use the buffered amount low threshold to implement flow control:

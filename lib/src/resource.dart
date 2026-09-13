@@ -1,10 +1,10 @@
 import 'event_dispatcher.dart';
-import 'websocket_connection.dart';
+import 'bridge_connection.dart';
 import 'ws_message.dart';
 
 abstract class PionResource {
   final String handle;
-  final WebSocketConnection connection;
+  final BridgeConnection connection;
   final EventDispatcher dispatcher;
 
   bool _disposed = false;

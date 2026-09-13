@@ -6,7 +6,7 @@ import 'buffered_broadcast.dart';
 import 'event_dispatcher.dart';
 import 'resource.dart';
 import 'types.dart';
-import 'websocket_connection.dart';
+import 'bridge_connection.dart';
 import 'ws_message.dart';
 
 class PionDataChannel extends PionResource {
@@ -26,7 +26,7 @@ class PionDataChannel extends PionResource {
 
   PionDataChannel(
     String handle,
-    WebSocketConnection connection,
+    BridgeConnection connection,
     EventDispatcher dispatcher, {
     this.label = '',
     this.onLog,

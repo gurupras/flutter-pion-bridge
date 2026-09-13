@@ -5,7 +5,7 @@ import 'data_channel.dart';
 import 'event_dispatcher.dart';
 import 'resource.dart';
 import 'types.dart';
-import 'websocket_connection.dart';
+import 'bridge_connection.dart';
 import 'ws_message.dart';
 
 class PionPeerConnection extends PionResource {
@@ -25,7 +25,7 @@ class PionPeerConnection extends PionResource {
 
   PionPeerConnection(
     String handle,
-    WebSocketConnection connection,
+    BridgeConnection connection,
     EventDispatcher dispatcher, {
     this.onLog,
   }) : super(handle, connection, dispatcher) {

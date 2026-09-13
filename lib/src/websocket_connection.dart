@@ -3,23 +3,20 @@ import 'dart:io' as io;
 import 'dart:typed_data';
 
 import 'package:meta/meta.dart';
-import 'package:msgpack_dart/msgpack_dart.dart' as msgpack;
 import 'package:web_socket_channel/io.dart';
 
+import 'bridge_connection.dart';
 import 'exception.dart';
-import 'ws_message.dart';
 
-class WebSocketConnection {
+/// Protocol session over a localhost WebSocket to the Go server — the sidecar
+/// process on desktop, the gomobile in-process server on Android/iOS.
+class WebSocketConnection extends BridgeConnection {
   IOWebSocketChannel? _channel;
   StreamSubscription? _subscription;
 
-  final Map<int, Completer<Map<String, dynamic>>> _pendingRequests = {};
-  final void Function(WsMessage) onMessage;
   final void Function()? onDisconnect;
-  final Duration requestTimeout;
   final Duration connectTimeout;
 
-  int _nextRequestId = 1;
   bool _connected = false;
   // Guards the disconnect path: an errored socket fires onError AND then
   // onDone, and manual close() must not trigger a reconnect. Without this a
@@ -27,13 +24,17 @@ class WebSocketConnection {
   bool _disconnectHandled = false;
 
   WebSocketConnection({
-    required this.onMessage,
+    required super.onMessage,
     this.onDisconnect,
-    this.requestTimeout = const Duration(seconds: 30),
+    super.requestTimeout,
     this.connectTimeout = const Duration(seconds: 10),
   });
 
+  @override
   bool get isConnected => _connected;
+
+  @override
+  String get transportName => 'WebSocket';
 
   /// HttpClient whose connectionFactory disables Nagle on the underlying
   /// socket. dart:io leaves TCP_NODELAY off by default and gives no access
@@ -83,108 +84,29 @@ class WebSocketConnection {
     _disconnectHandled = true;
     _connected = false;
 
-    _failPending(reason);
+    failPending(reason);
 
     onDisconnect?.call();
   }
 
-  void _failPending(String reason) {
-    final pending = Map.of(_pendingRequests);
-    _pendingRequests.clear();
-    for (final completer in pending.values) {
-      completer.completeError(
-        PionException('CONNECTION_LOST', reason, fatal: true),
-      );
-    }
-  }
-
   void _handleMessage(dynamic message) {
-    final Uint8List bytes;
     if (message is Uint8List) {
-      bytes = message;
+      handleFrame(message);
     } else if (message is List<int>) {
-      bytes = Uint8List.fromList(message);
-    } else {
-      return;
-    }
-
-    try {
-      final decoded = msgpack.deserialize(bytes);
-      if (decoded is! Map) return;
-      final wsMsg = WsMessage.fromDecoded(decoded);
-
-      if (wsMsg.type.endsWith(':ack') || wsMsg.type == 'error') {
-        final completer = _pendingRequests.remove(wsMsg.id);
-        if (completer != null) {
-          if (wsMsg.type == 'error') {
-            completer.completeError(PionException.fromWsMessage(wsMsg));
-          } else {
-            completer.complete(wsMsg.data);
-          }
-        } else if (wsMsg.id == 0) {
-          // An ack the server chose to broadcast (fire-and-forget sends);
-          // surface it as an event so nothing is silently dropped.
-          onMessage(wsMsg);
-        }
-      } else {
-        onMessage(wsMsg);
-      }
-    } catch (_) {
-      // Malformed message — ignore rather than crashing
+      handleFrame(Uint8List.fromList(message));
     }
   }
 
-  /// Fire-and-forget send (id 0): no ack is awaited or correlated. Any ack
-  /// the server broadcasts for id-0 sends is surfaced through [onMessage].
-  void send(String type, String? handle, Map<String, dynamic> data) {
-    if (!_connected) {
-      throw PionException('CONNECTION_LOST', 'WebSocket is not connected',
-          fatal: true);
-    }
-    final msg = WsMessage(type: type, id: 0, handle: handle, data: data);
-    _channel!.sink.add(msgpack.serialize(msg.toMap()));
-  }
+  @override
+  void sendFrame(Uint8List frame) => _channel!.sink.add(frame);
 
-  Future<Map<String, dynamic>> request(
-    String type,
-    String? handle,
-    Map<String, dynamic> data, {
-    Duration? timeout,
-  }) async {
-    if (!_connected) {
-      throw PionException('CONNECTION_LOST', 'WebSocket is not connected',
-          fatal: true);
-    }
-
-    final id = _nextRequestId++;
-    final msg = WsMessage(
-      type: type,
-      id: id,
-      handle: handle,
-      data: data,
-    );
-
-    final completer = Completer<Map<String, dynamic>>();
-    _pendingRequests[id] = completer;
-
-    final encoded = msgpack.serialize(msg.toMap());
-    _channel!.sink.add(encoded);
-
-    return completer.future.timeout(
-      timeout ?? requestTimeout,
-      onTimeout: () {
-        _pendingRequests.remove(id);
-        throw PionException('OPERATION_TIMEOUT', 'Request timed out');
-      },
-    );
-  }
-
+  @override
   Future<void> close() async {
     // Mark the disconnect as handled BEFORE tearing down the socket so a
     // trailing onDone can't trigger onDisconnect (and with it a reconnect).
     _disconnectHandled = true;
     _connected = false;
-    _failPending('Connection closed');
+    failPending('Connection closed');
     await _subscription?.cancel();
     await _channel?.sink.close();
   }

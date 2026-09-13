@@ -22,9 +22,14 @@ struct _PionbridgePlugin {
   FlMethodChannel* channel;
   GPid server_pid;
   gint stdout_fd;
+  // Write end of the child's stdin. Never written; held so the kernel closes
+  // it when this process dies for any reason (exit(), crash, SIGKILL), which
+  // is the Go server's cue to exit (see go/main.go). dispose() alone does not
+  // run on those paths, so without this the server outlives the app.
+  gint stdin_fd;
 };
 
-// Guards server_pid/stdout_fd: the start worker runs on a detached thread
+// Guards server_pid/stdout_fd/stdin_fd: the start worker runs on a detached thread
 // while dispose/stopServer/a second startServer run on the GTK thread, and
 // unsynchronized access could kill the wrong pid or leak an overwritten one.
 // Static storage (zero-init) so no init/clear lifecycle is needed.
@@ -55,6 +60,10 @@ static void pionbridge_plugin_dispose(GObject* object) {
       close(self->stdout_fd);
       self->stdout_fd = -1;
     }
+    if (self->stdin_fd >= 0) {
+      close(self->stdin_fd);
+      self->stdin_fd = -1;
+    }
   }
   g_clear_object(&self->channel);
   G_OBJECT_CLASS(pionbridge_plugin_parent_class)->dispose(object);
@@ -67,6 +76,7 @@ static void pionbridge_plugin_class_init(PionbridgePluginClass* klass) {
 static void pionbridge_plugin_init(PionbridgePlugin* self) {
   self->server_pid = 0;
   self->stdout_fd = -1;
+  self->stdin_fd = -1;
 }
 
 // Returns the path to the bundled pionbridge binary.
@@ -170,6 +180,10 @@ static void start_server_worker(PionbridgePlugin* self,
     close(self->stdout_fd);
     self->stdout_fd = -1;
   }
+  if (self->stdin_fd >= 0) {
+    close(self->stdin_fd);
+    self->stdin_fd = -1;
+  }
 
   std::string binary_path = get_binary_path();
   if (binary_path.empty() || access(binary_path.c_str(), X_OK) != 0) {
@@ -179,6 +193,7 @@ static void start_server_worker(PionbridgePlugin* self,
   }
 
   gchar* argv[] = {const_cast<gchar*>(binary_path.c_str()), nullptr};
+  gint child_stdin = -1;
   gint child_stdout = -1;
   GError* error = nullptr;
 
@@ -189,7 +204,7 @@ static void start_server_worker(PionbridgePlugin* self,
       G_SPAWN_DO_NOT_REAP_CHILD,
       nullptr, nullptr,
       &self->server_pid,
-      nullptr,        // stdin
+      &child_stdin,   // stdin: a pipe we hold open (parent-death signal)
       &child_stdout,  // stdout
       nullptr,        // stderr (let it go to terminal)
       &error);
@@ -205,12 +220,15 @@ static void start_server_worker(PionbridgePlugin* self,
   g_child_watch_add(self->server_pid, child_exited_cb, nullptr);
 
   self->stdout_fd = child_stdout;
+  self->stdin_fd = child_stdin;
 
   auto fail_and_kill = [&](const std::string& message) {
     kill(self->server_pid, SIGTERM);
     self->server_pid = 0;
     close(self->stdout_fd);
     self->stdout_fd = -1;
+    close(self->stdin_fd);
+    self->stdin_fd = -1;
     fail("SERVER_START_FAILED", message);
   };
 
@@ -275,6 +293,10 @@ static void handle_stop_server(PionbridgePlugin* self,
     if (self->stdout_fd >= 0) {
       close(self->stdout_fd);
       self->stdout_fd = -1;
+    }
+    if (self->stdin_fd >= 0) {
+      close(self->stdin_fd);
+      self->stdin_fd = -1;
     }
   }
   fl_method_call_respond_success(method_call, nullptr, nullptr);

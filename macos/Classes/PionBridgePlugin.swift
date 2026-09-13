@@ -4,6 +4,11 @@ import FlutterMacOS
 public class PionBridgePlugin: NSObject, FlutterPlugin {
     private var serverProcess: Process?
     private var serverStderr: FileHandle?
+    // Write end of the child's stdin. Never written; held so the kernel closes
+    // it when this process dies for any reason (exit(), crash, SIGKILL), which
+    // is the Go server's cue to exit (see go/main.go). deinit alone does not
+    // run on those paths, so without this the server outlives the app.
+    private var serverStdin: FileHandle?
 
     public static func register(with registrar: FlutterPluginRegistrar) {
         let channel = FlutterMethodChannel(
@@ -31,6 +36,8 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
         serverProcess = nil
         serverStderr?.readabilityHandler = nil
         serverStderr = nil
+        try? serverStdin?.close()
+        serverStdin = nil
 
         // Locate the bundled binary in the plugin's Resources
         guard let binaryPath = Bundle(for: type(of: self))
@@ -46,8 +53,10 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: binaryPath)
 
+        let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+        process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
@@ -88,6 +97,7 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
 
         serverProcess = process
         serverStderr = stderrHandle
+        serverStdin = stdinPipe.fileHandleForWriting
 
         // Read startup JSON on a background thread with a 10s timeout
         DispatchQueue.global(qos: .userInitiated).async {
@@ -144,6 +154,8 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
         serverProcess = nil
         serverStderr?.readabilityHandler = nil
         serverStderr = nil
+        try? serverStdin?.close()
+        serverStdin = nil
         result(nil)
     }
 
@@ -151,5 +163,6 @@ public class PionBridgePlugin: NSObject, FlutterPlugin {
         serverProcess?.terminate()
         serverStderr?.readabilityHandler = nil
         serverStderr = nil
+        try? serverStdin?.close()
     }
 }

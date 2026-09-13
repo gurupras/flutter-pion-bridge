@@ -29,6 +29,11 @@ class PionBridgePlugin : public flutter::Plugin {
   std::mutex process_mutex_;
   HANDLE process_handle_ = INVALID_HANDLE_VALUE;
   HANDLE stdout_read_ = INVALID_HANDLE_VALUE;
+  // Write end of the child's stdin. Never written; held (non-inheritable) so
+  // the OS closes it when this process dies for any reason, which is the Go
+  // server's cue to exit (see go/main.go). The destructor does not run on a
+  // crash or TerminateProcess, so without this the server outlives the app.
+  HANDLE stdin_write_ = INVALID_HANDLE_VALUE;
 };
 
 }  // namespace pion_bridge

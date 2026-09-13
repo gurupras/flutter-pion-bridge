@@ -97,6 +97,10 @@ PionBridgePlugin::~PionBridgePlugin() {
     CloseHandle(stdout_read_);
     stdout_read_ = INVALID_HANDLE_VALUE;
   }
+  if (stdin_write_ != INVALID_HANDLE_VALUE) {
+    CloseHandle(stdin_write_);
+    stdin_write_ = INVALID_HANDLE_VALUE;
+  }
 }
 
 void PionBridgePlugin::HandleMethodCall(
@@ -125,6 +129,10 @@ void PionBridgePlugin::StartServer(
       CloseHandle(stdout_read_);
       stdout_read_ = INVALID_HANDLE_VALUE;
     }
+    if (stdin_write_ != INVALID_HANDLE_VALUE) {
+      CloseHandle(stdin_write_);
+      stdin_write_ = INVALID_HANDLE_VALUE;
+    }
   }
 
   std::wstring binary_path = GetBinaryPath();
@@ -147,13 +155,26 @@ void PionBridgePlugin::StartServer(
   // Make read end non-inheritable
   SetHandleInformation(stdout_read_, HANDLE_FLAG_INHERIT, 0);
 
+  // Stdin pipe the child reads until EOF: we keep the write end, so it closes
+  // when this process exits or dies.
+  HANDLE stdin_read = INVALID_HANDLE_VALUE;
+  if (!CreatePipe(&stdin_read, &stdin_write_, &sa, 0)) {
+    CloseHandle(stdout_read_);
+    stdout_read_ = INVALID_HANDLE_VALUE;
+    CloseHandle(stdout_write);
+    result->Error("SERVER_START_FAILED", "CreatePipe (stdin) failed");
+    return;
+  }
+  // Make write end non-inheritable
+  SetHandleInformation(stdin_write_, HANDLE_FLAG_INHERIT, 0);
+
   STARTUPINFOW si = {};
   si.cb = sizeof(si);
   si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
   si.wShowWindow = SW_HIDE;
   si.hStdOutput = stdout_write;
   si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
-  si.hStdInput = INVALID_HANDLE_VALUE;
+  si.hStdInput = stdin_read;
 
   PROCESS_INFORMATION pi = {};
   std::wstring cmd = L"\"" + binary_path + L"\"";
@@ -163,11 +184,14 @@ void PionBridgePlugin::StartServer(
       CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
 
   CloseHandle(stdout_write);  // child has its own copy
+  CloseHandle(stdin_read);    // child has its own copy
 
   if (!ok) {
     std::lock_guard<std::mutex> lock(process_mutex_);
     CloseHandle(stdout_read_);
     stdout_read_ = INVALID_HANDLE_VALUE;
+    CloseHandle(stdin_write_);
+    stdin_write_ = INVALID_HANDLE_VALUE;
     result->Error("SERVER_START_FAILED",
                   "CreateProcess failed: " + std::to_string(GetLastError()));
     return;
@@ -254,6 +278,10 @@ void PionBridgePlugin::StopServer(
     if (stdout_read_ != INVALID_HANDLE_VALUE) {
       CloseHandle(stdout_read_);
       stdout_read_ = INVALID_HANDLE_VALUE;
+    }
+    if (stdin_write_ != INVALID_HANDLE_VALUE) {
+      CloseHandle(stdin_write_);
+      stdin_write_ = INVALID_HANDLE_VALUE;
     }
   }
   result->Success();

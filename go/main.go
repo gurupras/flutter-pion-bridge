@@ -51,10 +51,10 @@ func main() {
 	// holds the write end; reading blocks until EOF (host closed it or
 	// crashed), at which point we exit instead of lingering as an orphan.
 	//
-	// Guard on the fd actually being a pipe: the Linux GTK plugin spawns us
-	// with stdin as /dev/null (a character device), where reading returns
-	// EOF immediately — an unconditional watchdog would kill a healthy
-	// server the instant it started.
+	// Guard on the fd actually being a pipe: run standalone from a shell,
+	// stdin may be /dev/null (a character device), where reading returns EOF
+	// immediately — an unconditional watchdog would kill a healthy server the
+	// instant it started. The desktop plugins all hand us a held pipe.
 	go func() {
 		fi, err := os.Stdin.Stat()
 		if err != nil || fi.Mode()&os.ModeNamedPipe == 0 {

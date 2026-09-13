@@ -84,6 +84,9 @@ class FfiConnection extends BridgeConnection {
   static String defaultLibraryPath() {
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     if (Platform.isLinux) return '$exeDir/lib/libpionbridge.so';
+    // <App>.app/Contents/MacOS/<exe> -> <App>.app/Contents/Frameworks
+    if (Platform.isMacOS) return '$exeDir/../Frameworks/libpionbridge.dylib';
+    if (Platform.isWindows) return '$exeDir\\pionbridge.dll';
     throw UnsupportedError(
         'pion_bridge shared mode is not bundled for ${Platform.operatingSystem} '
         'yet; pass libraryPath to load a library you built yourself');

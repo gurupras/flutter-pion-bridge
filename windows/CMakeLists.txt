@@ -26,3 +26,10 @@ if(EXISTS "${PIONBRIDGE_EXE}")
   install(FILES "${PIONBRIDGE_EXE}"
           DESTINATION "${CMAKE_INSTALL_PREFIX}")
 endif()
+
+# Shared mode (PionBridgeMode.shared): the in-process DLL, loaded with dart:ffi.
+set(PIONBRIDGE_DLL "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/pionbridge.dll")
+if(EXISTS "${PIONBRIDGE_DLL}")
+  install(FILES "${PIONBRIDGE_DLL}"
+          DESTINATION "${CMAKE_INSTALL_PREFIX}")
+endif()

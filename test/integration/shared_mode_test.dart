@@ -1,7 +1,7 @@
 // Integration tests for PionBridgeMode.shared: the Go bridge built as a shared
 // library, loaded into the test process with dart:ffi. No sidecar process and
 // no WebSocket — frames go through PionBridgeOpen/Send/Close.
-@TestOn('linux')
+@TestOn('linux || mac-os || windows')
 library;
 
 import 'dart:async';
@@ -16,8 +16,11 @@ import 'package:pion_bridge/src/data_channel.dart';
 import 'package:pion_bridge/src/exception.dart';
 import 'package:pion_bridge/src/types.dart';
 
-const _loopback = PionSettingsEngine(
-  interfaceWhitelist: ['lo'],
+// Loopback-only ICE keeps setup deterministic on hosts with many interfaces. The
+// loopback interface is `lo` on Linux and `lo0` on macOS; Windows has no stable
+// name for it, so there the loopback candidate is included without a whitelist.
+final _loopback = PionSettingsEngine(
+  interfaceWhitelist: Platform.isWindows ? null : [Platform.isMacOS ? 'lo0' : 'lo'],
   includeLoopbackCandidate: true,
 );
 
@@ -25,12 +28,15 @@ const _loopback = PionSettingsEngine(
 /// file lock, installed with an atomic rename, like TestHarness.ensureBinary).
 Future<String> _ensureSharedLibrary() async {
   final goDir = '${Directory.current.path}/go';
-  final target = '$goDir/libpionbridge_test.so';
+  final ext = Platform.isMacOS ? 'dylib' : (Platform.isWindows ? 'dll' : 'so');
+  final target = '$goDir/libpionbridge_test.$ext';
   final lock = await File('$goDir/.libpionbridge_test.lock')
       .open(mode: FileMode.write);
   await lock.lock(FileLock.blockingExclusive);
   try {
-    final tmp = '$target.build.$pid.so';
+    // No extra dots in the name: on Windows, Go writes it into the generated .def
+    // export file, and MinGW ld rejects a LIBRARY name like a.b.c.dll.
+    final tmp = '$goDir/libpionbridge_test_build_$pid.$ext';
     final result = await Process.run(
       'go',
       ['build', '-buildmode=c-shared', '-o', tmp, './shared'],
@@ -39,7 +45,9 @@ Future<String> _ensureSharedLibrary() async {
     if (result.exitCode != 0) {
       throw Exception('Failed to build shared library:\n${result.stderr}');
     }
-    File('${tmp.substring(0, tmp.length - 3)}.h').deleteSync();
+    final header = File('${tmp.substring(0, tmp.length - ext.length - 1)}.h');
+    if (header.existsSync()) header.deleteSync();
+    if (File(target).existsSync()) File(target).deleteSync(); // Windows rename won't replace
     File(tmp).renameSync(target);
   } finally {
     await lock.unlock();

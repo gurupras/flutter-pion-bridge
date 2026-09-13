@@ -8,4 +8,6 @@ go/.pionbridge_test_bin.lock
 go/benchpeer
 go/pionbridge_bench_bin
 go/libpionbridge_test.so
+go/libpionbridge_test.dylib
+go/libpionbridge_test.dll
 go/.libpionbridge_test.lock

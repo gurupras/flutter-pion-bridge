@@ -37,3 +37,17 @@ if(EXISTS "${PIONBRIDGE_BINARY}")
                       GROUP_READ GROUP_EXECUTE
                       WORLD_READ WORLD_EXECUTE)
 endif()
+
+# Shared mode: the same server as an in-process library, loaded by the Dart
+# side with dart:ffi (PionBridgeMode.shared). Optional — only bundled when
+# build_linux.sh has produced it. Installed as libpionbridge.so on every arch.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
+  set(PIONBRIDGE_SHARED_LIB "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/libpionbridge_arm64.so")
+else()
+  set(PIONBRIDGE_SHARED_LIB "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/libpionbridge.so")
+endif()
+if(EXISTS "${PIONBRIDGE_SHARED_LIB}")
+  install(FILES "${PIONBRIDGE_SHARED_LIB}"
+          DESTINATION "lib"
+          RENAME "libpionbridge.so")
+endif()

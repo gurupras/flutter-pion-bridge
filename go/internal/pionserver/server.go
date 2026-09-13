@@ -241,39 +241,45 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		// Panic recovery per message
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					log.Printf("PANIC recovered: %v", r)
-					errMsg := ErrorResponse(0, "FATAL_PANIC", fmt.Sprintf("%v", r), true, "")
-					cw.enqueue(errMsg)
-				}
-			}()
+		s.processFrame(data, handler, cw)
+	}
+}
 
-			msg := getMessage()
-			defer putMessage(msg)
+// processFrame decodes one inbound protocol frame, dispatches it to handler
+// and queues the response on cw. It is transport-independent: the WebSocket
+// read loop and the in-process FrameSession both feed it. data may be reused
+// by the caller once this returns (msgpack.Unmarshal copies out of it).
+func (s *Server) processFrame(data []byte, handler *Handler, cw *connWriter) {
+	// Panic recovery per message
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("PANIC recovered: %v", r)
+			errMsg := ErrorResponse(0, "FATAL_PANIC", fmt.Sprintf("%v", r), true, "")
+			cw.enqueue(errMsg)
+		}
+	}()
 
-			if err := msgpack.Unmarshal(data, msg); err != nil {
-				errMsg := ErrorResponse(0, "INVALID_REQUEST", "invalid msgpack: "+err.Error(), false, "")
-				if err := cw.enqueue(errMsg); err != nil && err != errConnClosed {
-					log.Printf("Error enqueuing error response: %v", err)
-				}
-				return
-			}
+	msg := getMessage()
+	defer putMessage(msg)
 
-			// Touch the handle to update lastSeen
-			if msg.Handle != "" {
-				s.registry.Touch(msg.Handle)
-			}
+	if err := msgpack.Unmarshal(data, msg); err != nil {
+		errMsg := ErrorResponse(0, "INVALID_REQUEST", "invalid msgpack: "+err.Error(), false, "")
+		if err := cw.enqueue(errMsg); err != nil && err != errConnClosed {
+			log.Printf("Error enqueuing error response: %v", err)
+		}
+		return
+	}
 
-			response := handler.HandleMessage(msg)
-			if response.Type != "" {
-				if err := cw.enqueue(response); err != nil && err != errConnClosed {
-					log.Printf("Error enqueuing response: %v", err)
-				}
-			}
-		}()
+	// Touch the handle to update lastSeen
+	if msg.Handle != "" {
+		s.registry.Touch(msg.Handle)
+	}
+
+	response := handler.HandleMessage(msg)
+	if response.Type != "" {
+		if err := cw.enqueue(response); err != nil && err != errConnClosed {
+			log.Printf("Error enqueuing response: %v", err)
+		}
 	}
 }
 

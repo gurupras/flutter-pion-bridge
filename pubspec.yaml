@@ -3,10 +3,11 @@ description: Flutter library wrapping Pion WebRTC via a local Go WebSocket sidec
 version: 4.2.3
 
 environment:
-  sdk: '>=3.0.0 <4.0.0'
+  sdk: '>=3.1.0 <4.0.0'
   flutter: '>=3.10.0'
 
 dependencies:
+  ffi: ^2.1.0
   flutter:
     sdk: flutter
   msgpack_dart: ^1.0.1

@@ -2,13 +2,33 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+import 'bridge_connection.dart';
 import 'event_dispatcher.dart';
+import 'exception.dart';
+import 'ffi_connection.dart';
 import 'peer_connection.dart';
 import 'reconnect.dart';
 import 'types.dart';
 
+/// How the Dart side reaches the Go bridge.
+enum PionBridgeMode {
+  /// The Go server listens on a localhost WebSocket: a sidecar process on
+  /// desktop, the gomobile in-process server on Android/iOS. Supports
+  /// [PionBridge.startServer] / [PionBridge.connectExisting] and reconnects.
+  websocket,
+
+  /// The Go bridge is a shared library loaded into this process with
+  /// dart:ffi; frames are passed by function call. No sidecar, no socket, no
+  /// token, and it can be initialized from any isolate. Desktop only
+  /// (currently bundled on Linux). There is nothing to reconnect to: the
+  /// session lives until [PionBridge.close].
+  shared,
+}
+
 class PionBridge {
-  late ReconnectingWebSocketConnection _connection;
+  // Exactly one of these is set, depending on the mode.
+  ReconnectingWebSocketConnection? _ws;
+  FfiConnection? _ffi;
   late EventDispatcher _dispatcher;
   PionSettingsEngine? _settingsEngine;
 
@@ -29,18 +49,38 @@ class PionBridge {
     this.maxReconnectAttempts,
   });
 
-  /// Starts the in-process Go bridge server and connects to it.
+  /// Starts the Go bridge and connects to it.
   ///
-  /// Must be called from the root isolate — invokes a [MethodChannel] to
-  /// spawn the native server. To drive pion from a worker isolate, use
-  /// [startServer] on the root isolate, ship the returned [PionServerEndpoint]
-  /// to the worker, and call [connectExisting] from the worker.
+  /// [mode] defaults to [PionBridgeMode.websocket], which is how the bridge
+  /// has always worked: it must be called from the root isolate (it invokes
+  /// a [MethodChannel] to spawn the native server). To drive pion from a
+  /// worker isolate in that mode, use [startServer] on the root isolate, ship
+  /// the returned [PionServerEndpoint] to the worker, and call
+  /// [connectExisting] from the worker.
+  ///
+  /// With [PionBridgeMode.shared] the bridge is loaded in-process from
+  /// [sharedLibraryPath] (default: where the plugin bundles it) and this may
+  /// be called from any isolate. [onReconnected] and [maxReconnectAttempts]
+  /// do not apply; [onDisconnected] fires when the bridge is closed.
   static Future<PionBridge> initialize({
+    PionBridgeMode mode = PionBridgeMode.websocket,
+    String? sharedLibraryPath,
     PionSettingsEngine? settingsEngine,
     void Function()? onReconnected,
     void Function()? onDisconnected,
     int? maxReconnectAttempts,
   }) async {
+    if (mode == PionBridgeMode.shared) {
+      final pion = PionBridge._(onDisconnected: onDisconnected);
+      pion._settingsEngine = settingsEngine;
+      pion._dispatcher = EventDispatcher();
+      pion._ffi = FfiConnection.open(
+        onMessage: pion._dispatcher.broadcast,
+        libraryPath: sharedLibraryPath,
+      );
+      await pion._sendInit();
+      return pion;
+    }
     final endpoint = await startServer();
     return connectExisting(
       endpoint,
@@ -106,12 +146,12 @@ class PionBridge {
       final seMap = se.toMap();
       if (seMap.isNotEmpty) data['settings_engine'] = seMap;
     }
-    await _connection.request('init', null, data);
+    await _requireConnection().request('init', null, data);
   }
 
   Future<void> _connect(PionServerEndpoint endpoint) async {
     _dispatcher = EventDispatcher();
-    _connection = ReconnectingWebSocketConnection(
+    final ws = _ws = ReconnectingWebSocketConnection(
       onMessage: _dispatcher.broadcast,
       onReconnected: () {
         // Re-send init on reconnect so the new Go Handler gets the same
@@ -125,14 +165,28 @@ class PionBridge {
       maxAttempts: maxReconnectAttempts,
     );
 
-    await _connection.connect(
+    await ws.connect(
       'ws://127.0.0.1:${endpoint.port}/',
       token: endpoint.token,
     );
     await _sendInit();
   }
 
-  bool get isConnected => _connection.isConnected;
+  /// The mode this bridge was initialized with.
+  PionBridgeMode get mode =>
+      _ffi != null ? PionBridgeMode.shared : PionBridgeMode.websocket;
+
+  bool get isConnected => _ffi?.isConnected ?? _ws?.isConnected ?? false;
+
+  /// The live session: the FFI session, or the current WebSocket (which
+  /// changes across reconnects).
+  BridgeConnection _requireConnection() {
+    final conn = _ffi ?? _ws?.currentConnection;
+    if (conn == null || !conn.isConnected) {
+      throw PionException('CONNECTION_LOST', 'Not connected', fatal: true);
+    }
+    return conn;
+  }
 
   Future<PionPeerConnection> createPeerConnection({
     List<IceServer>? iceServers,
@@ -143,7 +197,8 @@ class PionBridge {
     String iceTransportPolicy = 'all',
     void Function(String)? onLog,
   }) async {
-    final response = await _connection.request('pc:create', null, {
+    final connection = _requireConnection();
+    final response = await connection.request('pc:create', null, {
       'ice_servers': iceServers?.map((s) => s.toMap()).toList() ?? [],
       'bundle_policy': bundlePolicy,
       'rtcp_mux_policy': rtcpMuxPolicy,
@@ -153,14 +208,22 @@ class PionBridge {
     return PionPeerConnection(
       response['handle'] as String,
       // Pass inner connection; after reconnect callers must create new PCs.
-      _connection.currentConnection!,
+      connection,
       _dispatcher,
       onLog: onLog,
     );
   }
 
   Future<void> close() async {
-    await _connection.close();
+    final ffi = _ffi;
+    if (ffi != null) {
+      final wasOpen = ffi.isConnected;
+      await ffi.close();
+      _dispatcher.closeAll();
+      if (wasOpen) onDisconnected?.call();
+      return;
+    }
+    await _ws?.close();
     _dispatcher.closeAll();
   }
 }

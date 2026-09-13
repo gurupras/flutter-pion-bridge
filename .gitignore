@@ -7,3 +7,5 @@ go/pionbridge_test_bin.build.*
 go/.pionbridge_test_bin.lock
 go/benchpeer
 go/pionbridge_bench_bin
+go/libpionbridge_test.so
+go/.libpionbridge_test.lock

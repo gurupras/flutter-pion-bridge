@@ -29,10 +29,7 @@ func TestRTOManager(t *testing.T) {
 			1500,
 			1275,
 			1106,
-			// Fork note: upstream expects 1000 here (capped at RTO.Min =
-			// 1s). This fork lowers RTO.Min to 100ms (see rtx_timer.go), so
-			// the computed value is no longer clamped at this point.
-			979,
+			1000, // capped at RTO.Min
 		}
 
 		for i := range 5 {

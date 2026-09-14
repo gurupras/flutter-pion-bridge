@@ -21,6 +21,15 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
 
 # Bundle pionbridge.exe next to the host executable
+# Apps that only use shared mode with their own library (e.g. one that links
+# package cshared together with their media code) can skip bundling the
+# sidecar and pionbridge.dll: set(PION_BRIDGE_BUNDLE_BINARIES OFF) before the
+# generated plugins are included.
+option(PION_BRIDGE_BUNDLE_BINARIES "Bundle the pionbridge sidecar and pionbridge.dll" ON)
+if(NOT PION_BRIDGE_BUNDLE_BINARIES)
+  return()
+endif()
+
 set(PIONBRIDGE_EXE "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/pionbridge.exe")
 if(EXISTS "${PIONBRIDGE_EXE}")
   install(FILES "${PIONBRIDGE_EXE}"

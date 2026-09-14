@@ -2,7 +2,9 @@ package pionserver
 
 import (
 	"sync"
+	"sync/atomic"
 
+	"github.com/pion/datachannel"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -59,6 +61,18 @@ type DCSendState struct {
 	cond      *sync.Cond
 	threshold uint64
 	closeOnce sync.Once
+	// raw is the detached ReadWriteCloser once the channel opened, when the
+	// session detaches data channels; nil otherwise.
+	raw atomic.Pointer[datachannel.ReadWriteCloser]
+}
+
+func (s *DCSendState) setDetached(raw datachannel.ReadWriteCloser) { s.raw.Store(&raw) }
+
+func (s *DCSendState) detached() datachannel.ReadWriteCloser {
+	if p := s.raw.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 func newDCSendState(cfg DCConfig) *DCSendState {

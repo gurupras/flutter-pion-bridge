@@ -107,6 +107,21 @@ class PionSettingsEngine {
   final bool? disableCloseByDtls;
   final bool? disableSrtcpReplayProtection;
   final bool? disableSrtpReplayProtection;
+
+  /// Detach every DataChannel (pion's `DetachDataChannels`). The Go side then
+  /// reads and writes each channel directly instead of through pion's
+  /// callback read loop. The Dart API is unchanged: messages still arrive on
+  /// [PionDataChannel.onMessage] and sends still go through `send`/`sendBinary`.
+  ///
+  /// Applies to every channel on connections created by this bridge, which is
+  /// pion's granularity. Useful for bulk transfer, together with
+  /// [enableDataChannelBlockWrite] and a larger [sctpMaxReceiveBufferSize].
+  final bool? detachDataChannels;
+
+  /// Make writes on detached channels block while the SCTP send buffer is
+  /// full (pion's `EnableDataChannelBlockWrite`), so a sender is paced by the
+  /// transport instead of queueing in pion. **Only takes effect together with
+  /// [detachDataChannels]**; without it pion ignores the setting.
   final bool? enableDataChannelBlockWrite;
   final bool? enableSctpZeroChecksum;
 
@@ -174,6 +189,7 @@ class PionSettingsEngine {
     this.disableCloseByDtls,
     this.disableSrtcpReplayProtection,
     this.disableSrtpReplayProtection,
+    this.detachDataChannels,
     this.enableDataChannelBlockWrite,
     this.enableSctpZeroChecksum,
     this.enableTracing,
@@ -218,6 +234,9 @@ class PionSettingsEngine {
     }
     if (disableSrtpReplayProtection != null) {
       map['disable_srtp_replay_protection'] = disableSrtpReplayProtection;
+    }
+    if (detachDataChannels != null) {
+      map['detach_data_channels'] = detachDataChannels;
     }
     if (enableDataChannelBlockWrite != null) {
       map['enable_data_channel_block_write'] = enableDataChannelBlockWrite;

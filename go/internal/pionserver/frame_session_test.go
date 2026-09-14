@@ -44,13 +44,24 @@ func newTestFrameClient(t *testing.T, s *Server) *testFrameClient {
 
 func (c *testFrameClient) request(typ, handle string, data map[string]interface{}) Message {
 	c.t.Helper()
+	m := c.requestRaw(Message{Type: typ, Handle: handle, Data: data})
+	if m.Type == "error" {
+		c.t.Fatalf("%s: error response %v", typ, m.Data)
+	}
+	return m
+}
+
+// requestRaw sends msg (its ID is assigned here) and returns the correlated
+// response, error responses included.
+func (c *testFrameClient) requestRaw(msg Message) Message {
+	c.t.Helper()
 	c.mu.Lock()
-	id := c.nextID
+	msg.ID = c.nextID
 	c.nextID++
 	ch := make(chan Message, 1)
-	c.acks[id] = ch
+	c.acks[msg.ID] = ch
 	c.mu.Unlock()
-	frame, err := msgpack.Marshal(Message{Type: typ, ID: id, Handle: handle, Data: data})
+	frame, err := msgpack.Marshal(msg)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -59,12 +70,9 @@ func (c *testFrameClient) request(typ, handle string, data map[string]interface{
 	}
 	select {
 	case m := <-ch:
-		if m.Type == "error" {
-			c.t.Fatalf("%s: error response %v", typ, m.Data)
-		}
 		return m
 	case <-time.After(5 * time.Second):
-		c.t.Fatalf("%s: no ack", typ)
+		c.t.Fatalf("%s: no response", msg.Type)
 		return Message{}
 	}
 }

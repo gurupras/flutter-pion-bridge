@@ -19,7 +19,10 @@ import (
 //	  disable_close_by_dtls
 //	  disable_srtcp_replay_protection
 //	  disable_srtp_replay_protection
-//	  enable_data_channel_block_write
+//	  detach_data_channels             → DetachDataChannels (the handler then
+//	      detaches every channel on open and reads/writes it directly)
+//	  enable_data_channel_block_write  → EnableDataChannelBlockWrite (only
+//	      takes effect together with detach_data_channels)
 //	  enable_sctp_zero_checksum
 //
 //	Numeric:
@@ -73,6 +76,9 @@ func applySettingsEngine(se *webrtc.SettingEngine, cfg map[string]interface{}) e
 	}
 	if v, ok := cfg["disable_srtp_replay_protection"].(bool); ok {
 		se.DisableSRTPReplayProtection(v)
+	}
+	if v, ok := cfg["detach_data_channels"].(bool); ok && v {
+		se.DetachDataChannels()
 	}
 	if v, ok := cfg["enable_data_channel_block_write"].(bool); ok {
 		se.EnableDataChannelBlockWrite(v)

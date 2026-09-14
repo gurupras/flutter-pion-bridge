@@ -297,6 +297,7 @@ void main() {
         disableCloseByDtls: true,
         disableSrtcpReplayProtection: false,
         disableSrtpReplayProtection: true,
+        detachDataChannels: true,
         enableDataChannelBlockWrite: true,
         enableSctpZeroChecksum: true,
       );
@@ -306,6 +307,7 @@ void main() {
       expect(map['disable_close_by_dtls'], isTrue);
       expect(map['disable_srtcp_replay_protection'], isFalse);
       expect(map['disable_srtp_replay_protection'], isTrue);
+      expect(map['detach_data_channels'], isTrue);
       expect(map['enable_data_channel_block_write'], isTrue);
       expect(map['enable_sctp_zero_checksum'], isTrue);
     });

@@ -1,11 +1,15 @@
 package pionserver
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"log"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/pion/datachannel"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -15,6 +19,13 @@ type Handler struct {
 	sendEvent func(Message) // sends events back to the client
 	api       *webrtc.API   // built on init; defaults to the standard API
 	dcConfig  DCConfig      // tunables applied to every new DataChannel
+	// detach mirrors SettingEngine.DetachDataChannels for this session: every
+	// DataChannel is detached on open, read by a bridge-owned loop and written
+	// through the detached ReadWriteCloser (which is what makes
+	// enable_data_channel_block_write take effect).
+	detach bool
+	// maxMessageSize bounds the detached read buffer (sctp_max_message_size).
+	maxMessageSize int
 }
 
 // NewHandler creates a new message handler with default DC configuration.
@@ -112,12 +123,12 @@ func (h *Handler) runDCSend(
 		// for channels created while tracing is off.
 		idx := Trace.DCIdx(dcHandle)
 		t0 := time.Now()
-		sendErr = h.doSend(dc, w)
+		sendErr = h.doSend(dc, state, w)
 		atomic.AddInt64(&Trace.DCFrames[idx], 1)
 		atomic.AddInt64(&Trace.DCBytes[idx], int64(len(w.data)))
 		atomic.AddInt64(&Trace.DCNs[idx], time.Since(t0).Nanoseconds())
 	} else {
-		sendErr = h.doSend(dc, w)
+		sendErr = h.doSend(dc, state, w)
 	}
 	if LifecycleLogEnabled() {
 		lifeLogf("dc.Send post dc=%s msgID=%d err=%v buffered=%d", dcHandle, w.msgID, sendErr, dc.BufferedAmount())
@@ -150,8 +161,27 @@ func (h *Handler) runDCSend(
 	sendEvent(AckResponse("dc:send", w.msgID, dcHandle, nil))
 }
 
-// doSend dispatches one work unit to the right pion send call.
-func (h *Handler) doSend(dc *webrtc.DataChannel, w dcSendWork) error {
+// errDetachedNotOpen is returned for a send on a detached channel that has not
+// opened yet (pion's own Send reports the same condition for attached ones).
+var errDetachedNotOpen = errors.New("data channel is not open")
+
+// doSend dispatches one work unit to the right pion send call. Detached
+// channels write through the detached ReadWriteCloser, which blocks while the
+// SCTP send buffer is full when enable_data_channel_block_write is set.
+func (h *Handler) doSend(dc *webrtc.DataChannel, state *DCSendState, w dcSendWork) error {
+	if h.detach {
+		raw := state.detached()
+		if raw == nil {
+			return errDetachedNotOpen
+		}
+		var err error
+		if w.isText {
+			_, err = raw.WriteDataChannel([]byte(w.text), true)
+		} else {
+			_, err = raw.WriteDataChannel(w.data, false)
+		}
+		return err
+	}
 	if w.isText {
 		return dc.SendText(w.text)
 	}
@@ -218,6 +248,13 @@ func (h *Handler) handleInit(msg *Message) Message {
 		}
 		if v, ok := toInt(dc["send_queue_depth"]); ok && v >= 1 {
 			h.dcConfig.SendQueueDepth = int(v)
+		}
+	}
+	h.detach, h.maxMessageSize = false, 0
+	if cfg, ok := msg.Data["settings_engine"].(map[string]interface{}); ok {
+		h.detach, _ = cfg["detach_data_channels"].(bool)
+		if v, ok := toInt(cfg["sctp_max_message_size"]); ok {
+			h.maxMessageSize = int(v)
 		}
 	}
 	h.api = webrtc.NewAPI(webrtc.WithSettingEngine(se))
@@ -354,8 +391,8 @@ func (h *Handler) setupPCCallbacks(pc *webrtc.PeerConnection, handle string) {
 			}
 		}()
 		dcHandle := h.registry.RegisterChild(dc, handle)
+		h.startDCSendGoroutine(dc, dcHandle) // before callbacks: a detached OnOpen needs the send state
 		h.setupDCCallbacks(dc, dcHandle)
-		h.startDCSendGoroutine(dc, dcHandle)
 		h.sendEvent(Event("event:dataChannel", handle, map[string]interface{}{
 			"type":      "dataChannel",
 			"dc_handle": dcHandle,
@@ -366,12 +403,40 @@ func (h *Handler) setupPCCallbacks(pc *webrtc.PeerConnection, handle string) {
 }
 
 func (h *Handler) setupDCCallbacks(dc *webrtc.DataChannel, dcHandle string) {
+	// A detached channel is not in pion's close notifications (pion drops it
+	// from the transport on Detach and runs no read loop), so the bridge's read
+	// loop reports the close itself; once guards against a duplicate.
+	var closeOnce sync.Once
+	emitClose := func() {
+		closeOnce.Do(func() {
+			h.sendEvent(Event("event:dataChannelClose", dcHandle, map[string]interface{}{
+				"type": "close",
+			}))
+		})
+	}
+
 	dc.OnOpen(func() {
 		defer func() {
 			if r := recover(); r != nil {
 				log.Printf("PANIC in OnOpen callback for %s: %v", dcHandle, r)
 			}
 		}()
+		if h.detach {
+			// Pion requires Detach inside OnOpen when detaching is enabled.
+			raw, err := dc.Detach()
+			if err != nil {
+				h.sendEvent(Event("event:dc:error", dcHandle, map[string]interface{}{"error": "detach: " + err.Error()}))
+				return
+			}
+			if state, ok := h.registry.LookupDCSendState(dcHandle); ok {
+				state.setDetached(raw)
+			}
+			h.sendEvent(Event("event:dataChannelOpen", dcHandle, map[string]interface{}{
+				"type": "open",
+			}))
+			go h.readDetached(raw, dcHandle, emitClose)
+			return
+		}
 		h.sendEvent(Event("event:dataChannelOpen", dcHandle, map[string]interface{}{
 			"type": "open",
 		}))
@@ -383,10 +448,12 @@ func (h *Handler) setupDCCallbacks(dc *webrtc.DataChannel, dcHandle string) {
 				log.Printf("PANIC in OnClose callback for %s: %v", dcHandle, r)
 			}
 		}()
-		h.sendEvent(Event("event:dataChannelClose", dcHandle, map[string]interface{}{
-			"type": "close",
-		}))
+		emitClose()
 	})
+
+	if h.detach {
+		return // messages are read by readDetached, OnMessage never fires
+	}
 
 	dc.OnMessage(func(dcMsg webrtc.DataChannelMessage) {
 		defer func() {
@@ -410,6 +477,39 @@ func (h *Handler) setupDCCallbacks(dc *webrtc.DataChannel, dcHandle string) {
 		}
 		h.sendEvent(Event("event:dataChannelMessage", dcHandle, data))
 	})
+}
+
+// readDetached is the read loop for a detached DataChannel: it forwards every
+// message as the same event:dataChannelMessage an attached channel produces,
+// grows its buffer for large messages up to sctp_max_message_size, and reports
+// the close when the channel ends.
+func (h *Handler) readDetached(raw datachannel.ReadWriteCloser, dcHandle string, emitClose func()) {
+	defer emitClose()
+	limit := h.maxMessageSize
+	if limit <= 0 {
+		limit = 1073741823 // pion's default SCTP max message size; the buffer grows on demand
+	}
+	buf := make([]byte, min(limit, 65536))
+	for {
+		n, isString, err := raw.ReadDataChannel(buf)
+		if errors.Is(err, io.ErrShortBuffer) && len(buf) < limit {
+			buf = make([]byte, min(limit, 2*len(buf)))
+			continue // pion keeps the message queued on a short buffer
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) && LifecycleLogEnabled() {
+				lifeLogf("detached read dc=%s err=%v", dcHandle, err)
+			}
+			return
+		}
+		data := map[string]interface{}{"type": "message", "is_binary": !isString}
+		if isString {
+			data["data"] = string(buf[:n])
+		} else {
+			data["data"] = append([]byte(nil), buf[:n]...)
+		}
+		h.sendEvent(Event("event:dataChannelMessage", dcHandle, data))
+	}
 }
 
 func (h *Handler) lookupPC(msg *Message) (*webrtc.PeerConnection, Message, bool) {
@@ -605,8 +705,8 @@ func (h *Handler) handlePCCreateDc(msg *Message) Message {
 	}
 
 	dcHandle := h.registry.RegisterChild(dc, msg.Handle)
+	h.startDCSendGoroutine(dc, dcHandle) // before callbacks: a detached OnOpen needs the send state
 	h.setupDCCallbacks(dc, dcHandle)
-	h.startDCSendGoroutine(dc, dcHandle)
 
 	return AckResponse("pc:createDc", msg.ID, msg.Handle, map[string]interface{}{
 		"dc_handle": dcHandle,

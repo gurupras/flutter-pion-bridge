@@ -157,7 +157,8 @@ All fields are optional — omit any you don't need.
 | `disableCloseByDtls` | `DisableCloseByDTLS` |
 | `disableSrtcpReplayProtection` | `DisableSRTCPReplayProtection` |
 | `disableSrtpReplayProtection` | `DisableSRTPReplayProtection` |
-| `enableDataChannelBlockWrite` | `EnableDataChannelBlockWrite` |
+| `detachDataChannels` | `DetachDataChannels` (see [Detached data channels](#detached-data-channels)) |
+| `enableDataChannelBlockWrite` | `EnableDataChannelBlockWrite` (**only with `detachDataChannels`**) |
 | `enableSctpZeroChecksum` | `EnableSCTPZeroChecksum` |
 
 **Numeric**
@@ -257,6 +258,37 @@ Where latency goes. Measured on Linux over loopback (200-byte DataChannel messag
 - **Go side:** the bridge adds about 30 µs per message over raw pion (`PROBE=1 go test -run TestProbeLatency ./internal/pionserver`).
 - **Linux UI isolate:** the extra ~1 ms is specific to Flutter's Linux embedder; macOS and Windows UI isolates don't show it. On Linux, drive latency-sensitive traffic from a worker isolate.
 - **Burst traffic on Windows:** shared mode ran a 20k-message burst at ~51k msg/s against ~6k msg/s over the localhost WebSocket.
+
+## Detached data channels
+
+`detachDataChannels: true` switches the Go side to pion's detached channels: the bridge
+reads and writes each DataChannel directly instead of going through pion's callback read
+loop, which is what makes writes block while the SCTP send buffer is full
+(`enableDataChannelBlockWrite`, which pion ignores otherwise).
+
+```dart
+final bridge = await PionBridge.initialize(
+  settingsEngine: const PionSettingsEngine(
+    detachDataChannels: true,
+    enableDataChannelBlockWrite: true,   // writes wait for buffer space
+    sctpMaxReceiveBufferSize: 8 * 1024 * 1024,
+  ),
+);
+```
+
+- **The Dart API is unchanged.** Messages still arrive on `onMessage`, sends still go
+  through `send`/`sendBinary`, and `onOpen`/`onClose`/`onBufferedAmountLow` still fire.
+  (A detached channel is dropped from pion's own close notifications, so the bridge
+  reports the close from its read loop.)
+- **It applies to every channel** on connections created by that bridge — pion's
+  granularity, not per channel.
+- **Both transports support it**, websocket and shared mode, and so does gomobile.
+- **What it is for:** bulk transfer. Blocking writes plus a large SCTP receive buffer pace
+  the sender against the transport instead of queueing inside pion.
+- **What it costs:** in a Partner spike, detaching made an *unordered, 0-retransmit*
+  channel stall along with a busy reliable channel on a lossy link (~1 s p99 versus ~50 ms
+  without detaching). Latency-sensitive traffic — input events, control messages — is
+  better off on a non-detached bridge with a larger receive buffer.
 
 ## Backpressure Handling
 

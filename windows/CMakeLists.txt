@@ -20,7 +20,12 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
 
-# Bundle pionbridge.exe next to the host executable
+# Bundle pionbridge.exe (and, when built, the shared-mode pionbridge.dll) next to
+# the host executable through <plugin>_bundled_libraries, which the app's
+# CMakeLists installs into its bundle. An install() here cannot: the app sets
+# CMAKE_INSTALL_PREFIX to the bundle directory only after including the plugins,
+# so a clean build installed the binaries under the default prefix and the
+# bundle only got them from a second configure.
 # Apps that only use shared mode with their own library (e.g. one that links
 # package cshared together with their media code) can skip bundling the
 # sidecar and pionbridge.dll: set(PION_BRIDGE_BUNDLE_BINARIES OFF) before the
@@ -30,15 +35,14 @@ if(NOT PION_BRIDGE_BUNDLE_BINARIES)
   return()
 endif()
 
+set(PIONBRIDGE_BUNDLED "")
 set(PIONBRIDGE_EXE "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/pionbridge.exe")
 if(EXISTS "${PIONBRIDGE_EXE}")
-  install(FILES "${PIONBRIDGE_EXE}"
-          DESTINATION "${CMAKE_INSTALL_PREFIX}")
+  list(APPEND PIONBRIDGE_BUNDLED "${PIONBRIDGE_EXE}")
 endif()
-
 # Shared mode (PionBridgeMode.shared): the in-process DLL, loaded with dart:ffi.
 set(PIONBRIDGE_DLL "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/pionbridge.dll")
 if(EXISTS "${PIONBRIDGE_DLL}")
-  install(FILES "${PIONBRIDGE_DLL}"
-          DESTINATION "${CMAKE_INSTALL_PREFIX}")
+  list(APPEND PIONBRIDGE_BUNDLED "${PIONBRIDGE_DLL}")
 endif()
+set(pion_bridge_bundled_libraries "${PIONBRIDGE_BUNDLED}" PARENT_SCOPE)

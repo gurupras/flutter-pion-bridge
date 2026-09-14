@@ -26,9 +26,12 @@
   onto pion/sctp v1.10.0.
 - **Fixes:** the desktop sidecar now exits when the app dies however it dies
   (stdin pipe watchdog); the Windows plugin builds from an app (missing includes
-  and C registrar).
+  and C registrar); a clean Windows app build now bundles `pionbridge.exe` (it
+  previously appeared only after a second CMake configure).
 - Rebuilt bundled binaries for linux (amd64, arm64), windows, macOS (universal)
-  and the iOS xcframework.
+  and the iOS xcframework. The shared-mode libraries are not committed: build them
+  with `scripts/build_*.sh` (a committed macOS dylib would be linked into every
+  app, see the README).
 
 ## 4.2.3
 

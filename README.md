@@ -246,6 +246,7 @@ final bridge = await PionBridge.initialize(mode: PionBridgeMode.shared);
   - **Windows:** `scripts/build_windows.sh` builds `windows/runner/resources/pionbridge.dll` (needs a MinGW-w64 gcc); the plugin installs it next to the `.exe`.
 - Android/iOS already run the server in-process via gomobile, reached over the WebSocket; shared mode is not wired there.
 - An app should load one Go shared library. Each carries its own Go runtime, and two runtimes in one process conflict.
+- An app that links the bridge's `cshared` package into its own library needs neither the sidecar nor `libpionbridge`. On Linux and Windows, `set(PION_BRIDGE_BUNDLE_BINARIES OFF)` before the generated plugins are included. On macOS, set `PION_BRIDGE_BUNDLE_BINARIES=OFF` in the environment `flutter build macos` runs in, which drops the ~30 MB `pionbridge` sidecar from the app.
 
 Where latency goes. Measured on Linux over loopback (200-byte DataChannel messages at 120 Hz, echoed by a Pion peer, median round trip):
 

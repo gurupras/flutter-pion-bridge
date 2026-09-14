@@ -7,7 +7,10 @@ Pod::Spec.new do |s|
   s.author           = { 'Filemingo' => 'dev@filemingo.io' }
   s.source           = { :path => '.' }
   s.source_files     = 'Classes/**/*'
-  s.resources        = ['Resources/pionbridge']
+  # Apps that only use shared mode with their own library skip the sidecar, as
+  # PION_BRIDGE_BUNDLE_BINARIES=OFF does on Linux and Windows: set the variable
+  # in the environment `pod install` (flutter build macos) runs in.
+  s.resources        = ['Resources/pionbridge'] unless ENV['PION_BRIDGE_BUNDLE_BINARIES'] == 'OFF'
   # Shared mode (PionBridgeMode.shared): embedded into the app's Frameworks and
   # loaded with dart:ffi. Only present when build_macos.sh produced it.
   s.vendored_libraries = 'Libraries/*.dylib'

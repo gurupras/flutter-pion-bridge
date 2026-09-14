@@ -239,18 +239,24 @@ final bridge = await PionBridge.initialize(mode: PionBridgeMode.shared);
 - No child process, no listening socket and no token. The Go runtime lives in the app process for its lifetime, so a Go crash is an app crash.
 - It needs no `MethodChannel`, so it can be initialized directly from a worker isolate.
 - There is nothing to reconnect to; the session lasts until `close()`.
-- Linux only for now: `scripts/build_linux.sh` builds `linux/bundle/lib/libpionbridge.so` and the plugin bundles it. Elsewhere, build `go/shared` with `go build -buildmode=c-shared` and pass `sharedLibraryPath`.
+- Desktop platforms (verified in VMs on all three):
+  - **Linux:** `scripts/build_linux.sh` builds `linux/bundle/lib/libpionbridge.so`; the plugin bundles it into `lib/`.
+  - **macOS:** `scripts/build_macos.sh` builds a universal `macos/Libraries/libpionbridge.dylib`; the podspec embeds it in `Contents/Frameworks`. It is currently *linked* (`vendored_libraries`), so the Go runtime loads at launch even in websocket mode.
+  - **Windows:** `scripts/build_windows.sh` builds `windows/runner/resources/pionbridge.dll` (needs a MinGW-w64 gcc); the plugin installs it next to the `.exe`.
+- Android/iOS already run the server in-process via gomobile, reached over the WebSocket; shared mode is not wired there.
 - An app should load one Go shared library. Each carries its own Go runtime, and two runtimes in one process conflict.
 
 Where latency goes. Measured on Linux over loopback (200-byte DataChannel messages at 120 Hz, echoed by a Pion peer, median round trip):
 
-| | UI isolate | Worker isolate |
-|---|---|---|
-| websocket mode | 1.33 ms | 0.26–0.32 ms |
-| shared mode | 1.27 ms | 0.18–0.21 ms |
-| raw pion, Go only | — | 0.10 ms |
+| | Linux, UI isolate | Linux, worker isolate | macOS, UI isolate | Windows, UI isolate |
+|---|---|---|---|---|
+| websocket mode | 1.33 ms | 0.26–0.32 ms | 0.32 ms | 0.41 ms |
+| shared mode | 1.27 ms | 0.18–0.21 ms | 0.26 ms | 0.35 ms |
+| raw pion, Go only | — | 0.10 ms | — | — |
 
-Inside Go the bridge adds about 30 µs per message over raw pion (`PROBE=1 go test -run TestProbeLatency ./internal/pionserver`). Most of the remaining millisecond is incurred on Flutter's UI isolate, in either mode. For latency-sensitive traffic, drive the bridge from a worker isolate.
+- **Go side:** the bridge adds about 30 µs per message over raw pion (`PROBE=1 go test -run TestProbeLatency ./internal/pionserver`).
+- **Linux UI isolate:** the extra ~1 ms is specific to Flutter's Linux embedder; macOS and Windows UI isolates don't show it. On Linux, drive latency-sensitive traffic from a worker isolate.
+- **Burst traffic on Windows:** shared mode ran a 20k-message burst at ~51k msg/s against ~6k msg/s over the localhost WebSocket.
 
 ## Backpressure Handling
 

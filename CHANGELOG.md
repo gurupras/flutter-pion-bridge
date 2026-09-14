@@ -1,5 +1,35 @@
 # Changelog
 
+## 4.3.0
+
+- **Shared mode (desktop).** `PionBridge.initialize(mode: PionBridgeMode.shared)`
+  loads the bridge in-process over `dart:ffi` instead of spawning the sidecar and
+  talking over a localhost WebSocket: no child process, no socket, no token, and it
+  can start from any isolate. Linux bundles `libpionbridge.so`, macOS embeds a
+  universal `libpionbridge.dylib`, and Windows installs `pionbridge.dll`
+  (`scripts/build_*.sh` build them; the Windows DLL needs a MinGW-w64 gcc).
+- **Media.** `PionMediaEngine` declares codecs per session or per connection
+  (with RTX, pion's NACK/RTCP interceptors and `nackIntervalMs`); transceivers
+  can be added without tracks; `event:track` reports remote tracks. Media never
+  crosses the protocol: Go code linked into the same library registers track
+  handlers through the new `embed` package, and the c-shared exports live in the
+  importable `cshared` package so an app can ship one library with its own code.
+- **Detached data channels** (`detach_data_channels`), which make blocking writes
+  work and suit bulk transfer.
+- **Settings per PeerConnection:** `createPeerConnection(settingsEngine: ...)`
+  lets one bridge mix detached and attached connections.
+- **Apps that ship their own library** can leave the sidecar and
+  `libpionbridge` out of the bundle: `set(PION_BRIDGE_BUNDLE_BINARIES OFF)` on
+  Linux and Windows, `PION_BRIDGE_BUNDLE_BINARIES=OFF` in the environment of
+  `flutter build macos`.
+- pion/webrtc v4.2.15; the SCTP RTO patch (`go/pion-sctp-patched`) is rebased
+  onto pion/sctp v1.10.0.
+- **Fixes:** the desktop sidecar now exits when the app dies however it dies
+  (stdin pipe watchdog); the Windows plugin builds from an app (missing includes
+  and C registrar).
+- Rebuilt bundled binaries for linux (amd64, arm64), windows, macOS (universal)
+  and the iOS xcframework.
+
 ## 4.2.3
 
 Version-metadata correction. The `4.2.1` commit rebuilt the bundled binaries for

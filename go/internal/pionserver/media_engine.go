@@ -3,8 +3,10 @@ package pionserver
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/pion/interceptor"
+	"github.com/pion/interceptor/pkg/nack"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -33,6 +35,9 @@ var videoFeedback = []webrtc.RTCPFeedback{
 // Each video codec gets its RTX companion. Pion's default interceptors (NACK,
 // RTCP reports, stats) are registered too — an API with a MediaEngine but no
 // interceptors would never retransmit.
+//
+// "nack_interval_ms" sets how often missing packets are NACKed (pion's default
+// is 100 ms; a receiver without a jitter buffer wants retransmissions sooner).
 func buildMediaEngine(cfg map[string]interface{}) (*webrtc.MediaEngine, *interceptor.Registry, error) {
 	m := &webrtc.MediaEngine{}
 	video, err := stringList(cfg["video_codecs"])
@@ -78,8 +83,16 @@ func buildMediaEngine(cfg map[string]interface{}) (*webrtc.MediaEngine, *interce
 			return nil, nil, err
 		}
 	}
+	var interceptorOpts []webrtc.InterceptorOption
+	if ms, ok := toInt(cfg["nack_interval_ms"]); ok {
+		if ms <= 0 {
+			return nil, nil, fmt.Errorf("nack_interval_ms must be positive")
+		}
+		interceptorOpts = append(interceptorOpts,
+			webrtc.WithNackGeneratorOptions(nack.GeneratorInterval(time.Duration(ms)*time.Millisecond)))
+	}
 	reg := &interceptor.Registry{}
-	if err := webrtc.RegisterDefaultInterceptors(m, reg); err != nil {
+	if err := webrtc.RegisterDefaultInterceptorsWithOptions(m, reg, interceptorOpts...); err != nil {
 		return nil, nil, err
 	}
 	return m, reg, nil

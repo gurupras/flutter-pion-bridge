@@ -330,11 +330,20 @@ class PionMediaEngine {
   final List<String> videoCodecs;
   final List<String> audioCodecs;
 
-  const PionMediaEngine({this.videoCodecs = const [], this.audioCodecs = const []});
+  /// How often missing packets are NACKed. Null keeps pion's 100 ms; a
+  /// receiver without a jitter buffer wants retransmissions sooner.
+  final int? nackIntervalMs;
+
+  const PionMediaEngine({
+    this.videoCodecs = const [],
+    this.audioCodecs = const [],
+    this.nackIntervalMs,
+  });
 
   Map<String, dynamic> toMap() => {
         'video_codecs': videoCodecs,
         'audio_codecs': audioCodecs,
+        if (nackIntervalMs != null) 'nack_interval_ms': nackIntervalMs,
       };
 }
 

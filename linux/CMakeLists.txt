@@ -24,6 +24,15 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 # build_linux.sh emits amd64 as "pionbridge" and arm64 as "pionbridge_arm64";
 # pick the one matching the target arch and install it AS "pionbridge" so the
 # plugin's runtime lookup (lib/pionbridge) is unchanged on every arch.
+# Apps that only use shared mode with their own library (e.g. one that links
+# package cshared together with their media code) can skip bundling the
+# sidecar and libpionbridge: set(PION_BRIDGE_BUNDLE_BINARIES OFF) before the
+# generated plugins are included.
+option(PION_BRIDGE_BUNDLE_BINARIES "Bundle the pionbridge sidecar and libpionbridge" ON)
+if(NOT PION_BRIDGE_BUNDLE_BINARIES)
+  return()
+endif()
+
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
   set(PIONBRIDGE_BINARY "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/pionbridge_arm64")
 else()

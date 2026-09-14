@@ -18,6 +18,7 @@ class PionPeerConnection extends PionResource {
   final _iceGatheringComplete = BufferedBroadcast<void>();
   final _dataChannel = BufferedBroadcast<PionDataChannel>();
   final _connectionStateChange = BufferedBroadcast<ConnectionState>();
+  final _track = BufferedBroadcast<RemoteTrack>();
 
   // Children (created AND received DataChannels), so closing the PC releases
   // their local stream state too — mirroring the Go registry's cascade.
@@ -59,6 +60,13 @@ class PionPeerConnection extends PionResource {
             ConnectionState.fromString((msg.data['state'] as String?) ?? 'new');
         onLog?.call('[PC] connectionState=$state');
         _connectionStateChange.add(state);
+      case 'event:track':
+        _track.add(RemoteTrack(
+          kind: msg.data['kind'] == 'audio' ? MediaKind.audio : MediaKind.video,
+          trackId: (msg.data['track_id'] as String?) ?? '',
+          streamId: (msg.data['stream_id'] as String?) ?? '',
+          codec: (msg.data['codec'] as String?) ?? '',
+        ));
     }
   }
 
@@ -67,6 +75,20 @@ class PionPeerConnection extends PionResource {
   Stream<PionDataChannel> get onDataChannel => _dataChannel.stream;
   Stream<ConnectionState> get onConnectionStateChange =>
       _connectionStateChange.stream;
+
+  /// Remote tracks as they arrive. Media is handled in Go (see [RemoteTrack]).
+  Stream<RemoteTrack> get onTrack => _track.stream;
+
+  /// Adds a transceiver without a track and returns its index in creation
+  /// order. Transceivers appear as m-lines in that order. A sendonly
+  /// transceiver with no track still produces its m-line.
+  Future<int> addTransceiver(MediaKind kind, TransceiverDirection direction) async {
+    final response = await request('pc:addTransceiver', {
+      'kind': kind.name,
+      'direction': direction.name,
+    });
+    return (response['index'] as num).toInt();
+  }
 
   @override
   bool disposeLocal() {
@@ -82,6 +104,7 @@ class PionPeerConnection extends PionResource {
     _iceGatheringComplete.close();
     _dataChannel.close();
     _connectionStateChange.close();
+    _track.close();
     return true;
   }
 

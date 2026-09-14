@@ -290,6 +290,59 @@ final bridge = await PionBridge.initialize(
   without detaching). Latency-sensitive traffic — input events, control messages — is
   better off on a non-detached bridge with a larger receive buffer.
 
+## Media: codecs, transceivers and remote tracks
+
+The protocol carries control, not media. An application that receives audio or
+video declares what it can take, and handles the media itself in Go.
+
+```dart
+final bridge = await PionBridge.initialize(
+  mode: PionBridgeMode.shared,
+  sharedLibraryPath: myCombinedLibrary,
+  mediaEngine: const PionMediaEngine(videoCodecs: ['AV1', 'VP9', 'VP8'], audioCodecs: ['opus']),
+);
+final pc = await bridge.createPeerConnection();
+await pc.addTransceiver(MediaKind.video, TransceiverDirection.recvonly);
+pc.onTrack.listen((t) => print('${t.kind} ${t.codec}'));
+```
+
+- **`PionMediaEngine`** registers only the listed codecs, in preference order,
+  plus RTX for each video codec and pion's default interceptors (NACK, RTCP
+  reports). Without one a connection has no media codecs — fine for data
+  channels. It can be set per session or per connection, like
+  `PionSettingsEngine`. Unknown names fail with `INVALID_MEDIA_ENGINE`.
+- **`addTransceiver`** adds an m-line without a track. A `sendonly` transceiver
+  still appears in the SDP, reserving a slot.
+- **`onTrack`** reports each remote track (kind, ids, codec). The media itself
+  never reaches Dart.
+
+To process media, build **one** shared library containing the bridge and your
+own Go code — a process can host only one Go runtime:
+
+```go
+package main
+
+import (
+	_ "github.com/gurupras/flutter-pion-bridge/go/cshared" // the PionBridge* exports
+	"github.com/gurupras/flutter-pion-bridge/go/embed"
+	"github.com/pion/webrtc/v4"
+)
+
+func init() {
+	embed.OnTrack(func(pcHandle string, pc *webrtc.PeerConnection, t *webrtc.TrackRemote, r *webrtc.RTPReceiver) {
+		go decode(pcHandle, t) // must not block
+	})
+	embed.OnPeerConnectionClosed(func(pcHandle string) { release(pcHandle) })
+}
+
+func main() {}
+```
+
+Pass that library as `sharedLibraryPath`. Without an `OnTrack` handler the
+bridge drains tracks itself. On macOS, do not also bundle the bridge's own
+`libpionbridge.dylib`: the podspec links whatever is in `macos/Libraries/`,
+which would load a second Go runtime at launch.
+
 ## Backpressure Handling
 
 When sending large amounts of data over a DataChannel, the native send buffer can fill up faster than the remote peer can receive. To avoid dropping packets or blocking the sender, use the buffered amount low threshold to implement flow control:

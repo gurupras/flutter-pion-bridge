@@ -31,6 +31,7 @@ class PionBridge {
   FfiConnection? _ffi;
   late EventDispatcher _dispatcher;
   PionSettingsEngine? _settingsEngine;
+  PionMediaEngine? _mediaEngine;
 
   /// Called each time the WebSocket successfully reconnects.
   /// All prior [PionPeerConnection] handles are invalid after reconnect;
@@ -66,6 +67,7 @@ class PionBridge {
     PionBridgeMode mode = PionBridgeMode.websocket,
     String? sharedLibraryPath,
     PionSettingsEngine? settingsEngine,
+    PionMediaEngine? mediaEngine,
     void Function()? onReconnected,
     void Function()? onDisconnected,
     int? maxReconnectAttempts,
@@ -73,6 +75,7 @@ class PionBridge {
     if (mode == PionBridgeMode.shared) {
       final pion = PionBridge._(onDisconnected: onDisconnected);
       pion._settingsEngine = settingsEngine;
+      pion._mediaEngine = mediaEngine;
       pion._dispatcher = EventDispatcher();
       pion._ffi = FfiConnection.open(
         onMessage: pion._dispatcher.broadcast,
@@ -85,6 +88,7 @@ class PionBridge {
     return connectExisting(
       endpoint,
       settingsEngine: settingsEngine,
+      mediaEngine: mediaEngine,
       onReconnected: onReconnected,
       onDisconnected: onDisconnected,
       maxReconnectAttempts: maxReconnectAttempts,
@@ -125,6 +129,7 @@ class PionBridge {
   static Future<PionBridge> connectExisting(
     PionServerEndpoint endpoint, {
     PionSettingsEngine? settingsEngine,
+    PionMediaEngine? mediaEngine,
     void Function()? onReconnected,
     void Function()? onDisconnected,
     int? maxReconnectAttempts,
@@ -135,6 +140,7 @@ class PionBridge {
       maxReconnectAttempts: maxReconnectAttempts,
     );
     pion._settingsEngine = settingsEngine;
+    pion._mediaEngine = mediaEngine;
     await pion._connect(endpoint);
     return pion;
   }
@@ -146,6 +152,8 @@ class PionBridge {
       final seMap = se.toMap();
       if (seMap.isNotEmpty) data['settings_engine'] = seMap;
     }
+    final me = _mediaEngine;
+    if (me != null) data['media_engine'] = me.toMap();
     await _requireConnection().request('init', null, data);
   }
 
@@ -196,8 +204,12 @@ class PionBridge {
   /// connection with [PionSettingsEngine.detachDataChannels] for bulk transfer
   /// beside a default one for latency-sensitive channels. Data channels follow
   /// the connection they belong to.
+  ///
+  /// [mediaEngine] likewise overrides the session's codecs for this
+  /// connection; overriding one of the two keeps the session's other.
   Future<PionPeerConnection> createPeerConnection({
     PionSettingsEngine? settingsEngine,
+    PionMediaEngine? mediaEngine,
     List<IceServer>? iceServers,
     String bundlePolicy = 'balanced',
     String rtcpMuxPolicy = 'require',
@@ -210,6 +222,7 @@ class PionBridge {
     final perPC = settingsEngine?.toMap();
     final response = await connection.request('pc:create', null, {
       if (perPC != null && perPC.isNotEmpty) 'settings_engine': perPC,
+      if (mediaEngine != null) 'media_engine': mediaEngine.toMap(),
       'ice_servers': iceServers?.map((s) => s.toMap()).toList() ?? [],
       'bundle_policy': bundlePolicy,
       'rtcp_mux_policy': rtcpMuxPolicy,

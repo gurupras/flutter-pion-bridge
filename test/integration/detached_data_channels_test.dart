@@ -26,7 +26,7 @@ PionSettingsEngine settings({required bool detach}) => PionSettingsEngine(
     );
 
 /// Builds the shared library once per test process (see shared_mode_test.dart).
-Future<String> _sharedLibrary() async {
+Future<String> sharedLibraryForTests() async {
   final goDir = '${Directory.current.path}/go';
   final ext = Platform.isMacOS ? 'dylib' : (Platform.isWindows ? 'dll' : 'so');
   final target = '$goDir/libpionbridge_test.$ext';
@@ -79,7 +79,7 @@ void main() {
 
   setUpAll(() async {
     await TestHarness.ensureBinary();
-    lib = await _sharedLibrary();
+    lib = await sharedLibraryForTests();
   });
   tearDownAll(() => TestHarness.cleanupBinary());
   setUp(() async {

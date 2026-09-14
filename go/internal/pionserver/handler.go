@@ -39,6 +39,9 @@ type Handler struct {
 	mu sync.Mutex
 	// defaultProfile comes from `init` and is used unless pc:create overrides it.
 	defaultProfile *apiProfile
+	// defaultSE / defaultME are init's payloads, so a pc:create that overrides
+	// only one of settings_engine / media_engine inherits the other.
+	defaultSE, defaultME map[string]interface{}
 	// profiles caches one API per distinct pc:create settings_engine payload.
 	profiles map[string]*apiProfile
 	// pcProfiles maps a PeerConnection handle to the profile it was created
@@ -74,16 +77,25 @@ func NewHandlerWithConfig(registry *Registry, sendEvent func(Message), cfg DCCon
 	}
 }
 
-// buildProfile turns a settings_engine payload into an API and the settings the
-// bridge acts on itself.
-func buildProfile(cfg map[string]interface{}) (*apiProfile, error) {
+// buildProfile turns settings_engine and media_engine payloads into an API and
+// the settings the bridge acts on itself. Without a media_engine the API has
+// pion's zero MediaEngine (no codecs) — enough for data-channel-only use.
+func buildProfile(cfg, media map[string]interface{}) (*apiProfile, error) {
 	se := webrtc.SettingEngine{}
 	if cfg != nil {
 		if err := applySettingsEngine(&se, cfg); err != nil {
 			return nil, err
 		}
 	}
-	p := &apiProfile{api: webrtc.NewAPI(webrtc.WithSettingEngine(se))}
+	opts := []func(*webrtc.API){webrtc.WithSettingEngine(se)}
+	if media != nil {
+		m, reg, err := buildMediaEngine(media)
+		if err != nil {
+			return nil, &mediaEngineError{err}
+		}
+		opts = append(opts, webrtc.WithMediaEngine(m), webrtc.WithInterceptorRegistry(reg))
+	}
+	p := &apiProfile{api: webrtc.NewAPI(opts...)}
 	if cfg != nil {
 		p.detach, _ = cfg["detach_data_channels"].(bool)
 		if v, ok := toInt(cfg["sctp_max_message_size"]); ok {
@@ -93,11 +105,25 @@ func buildProfile(cfg map[string]interface{}) (*apiProfile, error) {
 	return p, nil
 }
 
-// profileFor returns the cached API for this settings payload, building it on
-// first use. Identical payloads share one API, so repeated pc:create calls with
-// the same settings do not pile up APIs.
-func (h *Handler) profileFor(cfg map[string]interface{}) (*apiProfile, error) {
-	key, err := json.Marshal(cfg) // encoding/json sorts map keys
+// mediaEngineError marks an invalid media_engine payload so it can be reported
+// with its own error code.
+type mediaEngineError struct{ err error }
+
+func (e *mediaEngineError) Error() string { return "media_engine: " + e.err.Error() }
+
+func profileErrorCode(err error) string {
+	var me *mediaEngineError
+	if errors.As(err, &me) {
+		return "INVALID_MEDIA_ENGINE"
+	}
+	return "INVALID_REQUEST"
+}
+
+// profileFor returns the cached API for these payloads, building it on first
+// use. Identical payloads share one API, so repeated pc:create calls with the
+// same settings do not pile up APIs.
+func (h *Handler) profileFor(cfg, media map[string]interface{}) (*apiProfile, error) {
+	key, err := json.Marshal([]interface{}{cfg, media}) // encoding/json sorts map keys
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +135,7 @@ func (h *Handler) profileFor(cfg map[string]interface{}) (*apiProfile, error) {
 	}
 	h.mu.Unlock()
 
-	p, err := buildProfile(cfg)
+	p, err := buildProfile(cfg, media)
 	if err != nil {
 		return nil, err
 	}
@@ -311,6 +337,8 @@ func (h *Handler) HandleMessage(msg *Message) Message {
 		return h.handlePCAddIce(msg)
 	case "pc:close":
 		return h.handlePCClose(msg)
+	case "pc:addTransceiver":
+		return h.handlePCAddTransceiver(msg)
 	case "pc:createDc":
 		return h.handlePCCreateDc(msg)
 	case "dc:send":
@@ -347,12 +375,14 @@ func (h *Handler) handleInit(msg *Message) Message {
 			h.dcConfig.SendQueueDepth = int(v)
 		}
 	}
-	profile, err := buildProfile(cfgOrNil(msg.Data["settings_engine"]))
+	se, me := cfgOrNil(msg.Data["settings_engine"]), cfgOrNil(msg.Data["media_engine"])
+	profile, err := buildProfile(se, me)
 	if err != nil {
-		return ErrorResponse(msg.ID, "INVALID_REQUEST", err.Error(), false, "")
+		return ErrorResponse(msg.ID, profileErrorCode(err), err.Error(), false, "")
 	}
 	h.mu.Lock()
 	h.defaultProfile = profile
+	h.defaultSE, h.defaultME = se, me
 	h.mu.Unlock()
 	return AckResponse("init", msg.ID, "", map[string]interface{}{
 		"version": "1.0.0",
@@ -426,11 +456,20 @@ func (h *Handler) handlePCCreate(msg *Message) Message {
 		}
 	}
 
-	profile := h.defaultProfile
-	if cfg := cfgOrNil(msg.Data["settings_engine"]); cfg != nil {
+	h.mu.Lock()
+	profile, se, me := h.defaultProfile, h.defaultSE, h.defaultME
+	h.mu.Unlock()
+	pcSE, pcME := cfgOrNil(msg.Data["settings_engine"]), cfgOrNil(msg.Data["media_engine"])
+	if pcSE != nil || pcME != nil {
+		if pcSE != nil {
+			se = pcSE
+		}
+		if pcME != nil {
+			me = pcME
+		}
 		var perr error
-		if profile, perr = h.profileFor(cfg); perr != nil {
-			return ErrorResponse(msg.ID, "INVALID_REQUEST", perr.Error(), false, "")
+		if profile, perr = h.profileFor(se, me); perr != nil {
+			return ErrorResponse(msg.ID, profileErrorCode(perr), perr.Error(), false, "")
 		}
 	}
 	pc, err := profile.api.NewPeerConnection(config)
@@ -485,6 +524,29 @@ func (h *Handler) setupPCCallbacks(pc *webrtc.PeerConnection, handle string) {
 		h.sendEvent(Event("event:connectionStateChange", handle, map[string]interface{}{
 			"type":  "connectionStateChange",
 			"state": state.String(),
+		}))
+		if state == webrtc.PeerConnectionStateClosed {
+			notifyPCClosed(handle)
+		}
+	})
+
+	pc.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("PANIC in OnTrack callback for %s: %v", handle, r)
+			}
+		}()
+		if fn := trackHook.Load(); fn != nil {
+			(*fn)(handle, pc, track, receiver)
+		} else {
+			go drainTrack(track)
+		}
+		h.sendEvent(Event("event:track", handle, map[string]interface{}{
+			"type":      "track",
+			"kind":      track.Kind().String(),
+			"track_id":  track.ID(),
+			"stream_id": track.StreamID(),
+			"codec":     track.Codec().MimeType,
 		}))
 	})
 
@@ -774,6 +836,7 @@ func (h *Handler) handlePCClose(msg *Message) Message {
 	}
 
 	h.forgetPCProfile(msg.Handle)
+	defer notifyPCClosed(msg.Handle)
 	if err := pc.Close(); err != nil {
 		return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, msg.Handle)
 	}
@@ -947,7 +1010,12 @@ func (h *Handler) handleResourceDelete(msg *Message) Message {
 		return ErrorResponse(msg.ID, "INVALID_REQUEST", "missing handle", false, "")
 	}
 
+	res, _ := h.registry.Lookup(msg.Handle)
+	_, isPC := res.(*webrtc.PeerConnection)
 	h.forgetPCProfile(msg.Handle) // no-op for non-PC handles
+	if isPC {
+		defer notifyPCClosed(msg.Handle)
+	}
 	if err := h.registry.Delete(msg.Handle); err != nil {
 		return ErrorResponse(msg.ID, "NOT_FOUND", err.Error(), false, msg.Handle)
 	}
@@ -1032,4 +1100,43 @@ func toUint16(v interface{}) (uint16, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// drainTrack reads and discards a track nobody handles, so pion's buffers do
+// not fill and stall the connection.
+func drainTrack(track *webrtc.TrackRemote) {
+	buf := make([]byte, 1500)
+	for {
+		if _, _, err := track.Read(buf); err != nil {
+			return
+		}
+	}
+}
+
+// handlePCAddTransceiver adds a transceiver without a track:
+//
+//	{"kind": "video"|"audio", "direction": "sendrecv"|"sendonly"|"recvonly"|"inactive"}
+//
+// The ack carries its index in creation order. A sendonly transceiver with no
+// track still produces its m-line, so a peer can reserve a slot to attach
+// media to later.
+func (h *Handler) handlePCAddTransceiver(msg *Message) Message {
+	pc, errMsg, ok := h.lookupPC(msg)
+	if !ok {
+		return errMsg
+	}
+	kind := webrtc.NewRTPCodecType(fmt.Sprint(msg.Data["kind"]))
+	if kind == 0 {
+		return ErrorResponse(msg.ID, "INVALID_REQUEST", "kind must be video or audio", false, msg.Handle)
+	}
+	direction := webrtc.NewRTPTransceiverDirection(fmt.Sprint(msg.Data["direction"]))
+	if direction == webrtc.RTPTransceiverDirectionUnknown {
+		return ErrorResponse(msg.ID, "INVALID_REQUEST", "direction must be sendrecv, sendonly, recvonly or inactive", false, msg.Handle)
+	}
+	if _, err := pc.AddTransceiverFromKind(kind, webrtc.RTPTransceiverInit{Direction: direction}); err != nil {
+		return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, msg.Handle)
+	}
+	return AckResponse("pc:addTransceiver", msg.ID, msg.Handle, map[string]interface{}{
+		"index": len(pc.GetTransceivers()) - 1,
+	})
 }

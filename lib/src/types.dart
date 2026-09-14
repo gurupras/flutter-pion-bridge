@@ -318,3 +318,50 @@ enum ConnectionState {
     return ConnectionState.values.byName(state);
   }
 }
+
+/// Codecs a PeerConnection's API registers, in preference order (the order
+/// they appear in SDP). Without one, a connection has no media codecs, which is
+/// all a data-channel-only application needs. Registering codecs also registers
+/// pion's default interceptors (NACK, RTCP reports).
+///
+/// Names: video `AV1`, `VP9`, `VP8`; audio `opus`. Unknown names fail with
+/// `INVALID_MEDIA_ENGINE`.
+class PionMediaEngine {
+  final List<String> videoCodecs;
+  final List<String> audioCodecs;
+
+  const PionMediaEngine({this.videoCodecs = const [], this.audioCodecs = const []});
+
+  Map<String, dynamic> toMap() => {
+        'video_codecs': videoCodecs,
+        'audio_codecs': audioCodecs,
+      };
+}
+
+enum MediaKind { video, audio }
+
+enum TransceiverDirection {
+  sendrecv,
+  sendonly,
+  recvonly,
+  inactive,
+}
+
+/// A remote track that arrived on a PeerConnection. Media itself is not
+/// delivered to Dart: an application reads it in Go, linked into the same
+/// shared library and registered with the bridge's `embed` package.
+class RemoteTrack {
+  final MediaKind kind;
+  final String trackId;
+  final String streamId;
+
+  /// MIME type, e.g. `video/AV1`.
+  final String codec;
+
+  const RemoteTrack({
+    required this.kind,
+    required this.trackId,
+    required this.streamId,
+    required this.codec,
+  });
+}

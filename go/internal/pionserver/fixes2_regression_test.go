@@ -43,7 +43,7 @@ func TestRegression_CascadeDeleteCollectsAllChildren(t *testing.T) {
 	for i := range kids {
 		kids[i] = &trackingCloser{}
 		handles[i] = r.RegisterChild(kids[i], pcHandle)
-		states[i] = newDCSendState(DefaultDCConfig)
+		states[i] = newDCSendState(DefaultDCConfig, false)
 		if !r.RegisterDCSendState(handles[i], states[i]) {
 			t.Fatalf("failed to register send state %d", i)
 		}
@@ -85,7 +85,7 @@ func TestRegression_CascadeDeleteCollectsAllChildren(t *testing.T) {
 // --- 2. closeState must fail queued work, not abandon it ---
 
 func TestRegression_CloseStateDrainsQueuedWork(t *testing.T) {
-	state := newDCSendState(DCConfig{BufferedAmountLowThreshold: 512, SendQueueDepth: 8})
+	state := newDCSendState(DCConfig{BufferedAmountLowThreshold: 512, SendQueueDepth: 8}, false)
 
 	var mu sync.Mutex
 	var responses []Message

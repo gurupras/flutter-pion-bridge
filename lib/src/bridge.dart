@@ -188,7 +188,16 @@ class PionBridge {
     return conn;
   }
 
+  /// Creates a PeerConnection.
+  ///
+  /// [settingsEngine] overrides the session's settings for THIS connection
+  /// only (pion applies a SettingEngine per API, and the bridge caches one API
+  /// per distinct payload). Use it to mix configurations in one bridge, e.g. a
+  /// connection with [PionSettingsEngine.detachDataChannels] for bulk transfer
+  /// beside a default one for latency-sensitive channels. Data channels follow
+  /// the connection they belong to.
   Future<PionPeerConnection> createPeerConnection({
+    PionSettingsEngine? settingsEngine,
     List<IceServer>? iceServers,
     String bundlePolicy = 'balanced',
     String rtcpMuxPolicy = 'require',
@@ -198,7 +207,9 @@ class PionBridge {
     void Function(String)? onLog,
   }) async {
     final connection = _requireConnection();
+    final perPC = settingsEngine?.toMap();
     final response = await connection.request('pc:create', null, {
+      if (perPC != null && perPC.isNotEmpty) 'settings_engine': perPC,
       'ice_servers': iceServers?.map((s) => s.toMap()).toList() ?? [],
       'bundle_policy': bundlePolicy,
       'rtcp_mux_policy': rtcpMuxPolicy,

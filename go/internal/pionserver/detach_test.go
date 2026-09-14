@@ -93,8 +93,8 @@ func TestDetached_BlockWriteBurstInOrder(t *testing.T) {
 		"sctp_max_receive_buffer_size":    8 << 20,
 		"sctp_max_message_size":           1 << 20,
 	})
-	const n = 200
-	payload := make([]byte, 256<<10)
+	const n = 60                    // 60 x 64 KB: enough to fill and drain the send buffer repeatedly,
+	payload := make([]byte, 64<<10) // small enough to stay well inside the ack timeout under -race
 	for i := 0; i < n; i++ {
 		p := append([]byte{byte(i)}, payload...)
 		a.request("dc:send", dcA, map[string]interface{}{"data": p, "await_drain": false})
@@ -133,5 +133,73 @@ func TestDetached_SendBeforeOpenFails(t *testing.T) {
 	resp := a.requestRaw(frame)
 	if resp.Type != "error" || resp.Data["code"] != "DC_SEND_ERROR" {
 		t.Fatalf("expected DC_SEND_ERROR, got %s %v", resp.Type, resp.Data)
+	}
+}
+
+// pion applies a SettingEngine per API, so one session can hold several: a
+// pc:create may carry its own settings_engine, e.g. a detached connection for
+// bulk transfer alongside an attached one for latency-sensitive traffic.
+func TestPerPeerConnectionSettings(t *testing.T) {
+	th := newTestHarness()
+	detached := loopbackSettingsEngine()
+	detached["detach_data_channels"] = true
+
+	create := func(cfg map[string]interface{}) string {
+		data := map[string]interface{}{}
+		if cfg != nil {
+			data["settings_engine"] = cfg
+		}
+		resp := th.handler.HandleMessage(&Message{Type: "pc:create", ID: 1, Data: data})
+		if resp.Type != "pc:create:ack" {
+			t.Fatalf("pc:create: %s %v", resp.Type, resp.Data)
+		}
+		return resp.Data["handle"].(string)
+	}
+
+	bulk := create(detached)
+	input := create(nil) // session default: attached
+	if p := th.handler.pcProfile(bulk); !p.detach {
+		t.Error("bulk PeerConnection should detach its data channels")
+	}
+	if p := th.handler.pcProfile(input); p.detach {
+		t.Error("input PeerConnection should not detach")
+	}
+	if th.handler.pcProfile(bulk).api == th.handler.pcProfile(input).api {
+		t.Error("different settings must use different APIs")
+	}
+
+	// The same payload reuses one API rather than piling them up.
+	again := create(detached)
+	if th.handler.pcProfile(again).api != th.handler.pcProfile(bulk).api {
+		t.Error("identical settings should share one API")
+	}
+
+	// Each channel follows its own PeerConnection's setting.
+	dcOf := func(pc string) string {
+		resp := th.handler.HandleMessage(&Message{Type: "pc:createDc", ID: 2, Handle: pc,
+			Data: map[string]interface{}{"label": "c"}})
+		if resp.Type != "pc:createDc:ack" {
+			t.Fatalf("pc:createDc: %s %v", resp.Type, resp.Data)
+		}
+		return resp.Data["dc_handle"].(string)
+	}
+	stateOf := func(dc string) *DCSendState {
+		s, ok := th.registry.LookupDCSendState(dc)
+		if !ok {
+			t.Fatalf("no send state for %s", dc)
+		}
+		return s
+	}
+	if !stateOf(dcOf(bulk)).detach {
+		t.Error("channel on the bulk PeerConnection should be detached")
+	}
+	if stateOf(dcOf(input)).detach {
+		t.Error("channel on the input PeerConnection should not be detached")
+	}
+
+	// Closing a PeerConnection forgets its profile (back to the session default).
+	th.handler.HandleMessage(&Message{Type: "pc:close", ID: 3, Handle: bulk, Data: map[string]interface{}{}})
+	if th.handler.pcProfile(bulk) != th.handler.defaultProfile {
+		t.Error("pc:close should forget the per-PC profile")
 	}
 }

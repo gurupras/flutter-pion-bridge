@@ -1,6 +1,7 @@
 package pionserver
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,19 +14,36 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-// Handler processes incoming messages and returns responses.
-type Handler struct {
-	registry  *Registry
-	sendEvent func(Message) // sends events back to the client
-	api       *webrtc.API   // built on init; defaults to the standard API
-	dcConfig  DCConfig      // tunables applied to every new DataChannel
-	// detach mirrors SettingEngine.DetachDataChannels for this session: every
-	// DataChannel is detached on open, read by a bridge-owned loop and written
+// apiProfile is one webrtc.API plus the settings the bridge itself has to act
+// on. A session has a default profile from `init`, and pc:create may carry its
+// own settings_engine — pion applies a SettingEngine per API, so a session can
+// hold several (e.g. one PeerConnection with detached channels for bulk
+// transfer and another without for latency-sensitive traffic).
+type apiProfile struct {
+	api *webrtc.API
+	// detach mirrors SettingEngine.DetachDataChannels: every DataChannel on
+	// this API is detached on open, read by a bridge-owned loop and written
 	// through the detached ReadWriteCloser (which is what makes
 	// enable_data_channel_block_write take effect).
 	detach bool
 	// maxMessageSize bounds the detached read buffer (sctp_max_message_size).
 	maxMessageSize int
+}
+
+// Handler processes incoming messages and returns responses.
+type Handler struct {
+	registry  *Registry
+	sendEvent func(Message) // sends events back to the client
+	dcConfig  DCConfig      // tunables applied to every new DataChannel
+
+	mu sync.Mutex
+	// defaultProfile comes from `init` and is used unless pc:create overrides it.
+	defaultProfile *apiProfile
+	// profiles caches one API per distinct pc:create settings_engine payload.
+	profiles map[string]*apiProfile
+	// pcProfiles maps a PeerConnection handle to the profile it was created
+	// with, so its DataChannels use the same settings.
+	pcProfiles map[string]*apiProfile
 }
 
 // NewHandler creates a new message handler with default DC configuration.
@@ -49,9 +67,85 @@ func NewHandlerWithConfig(registry *Registry, sendEvent func(Message), cfg DCCon
 			}
 			sendEvent(m)
 		},
-		api:      webrtc.NewAPI(),
-		dcConfig: cfg,
+		defaultProfile: &apiProfile{api: webrtc.NewAPI()},
+		profiles:       map[string]*apiProfile{},
+		pcProfiles:     map[string]*apiProfile{},
+		dcConfig:       cfg,
 	}
+}
+
+// buildProfile turns a settings_engine payload into an API and the settings the
+// bridge acts on itself.
+func buildProfile(cfg map[string]interface{}) (*apiProfile, error) {
+	se := webrtc.SettingEngine{}
+	if cfg != nil {
+		if err := applySettingsEngine(&se, cfg); err != nil {
+			return nil, err
+		}
+	}
+	p := &apiProfile{api: webrtc.NewAPI(webrtc.WithSettingEngine(se))}
+	if cfg != nil {
+		p.detach, _ = cfg["detach_data_channels"].(bool)
+		if v, ok := toInt(cfg["sctp_max_message_size"]); ok {
+			p.maxMessageSize = int(v)
+		}
+	}
+	return p, nil
+}
+
+// profileFor returns the cached API for this settings payload, building it on
+// first use. Identical payloads share one API, so repeated pc:create calls with
+// the same settings do not pile up APIs.
+func (h *Handler) profileFor(cfg map[string]interface{}) (*apiProfile, error) {
+	key, err := json.Marshal(cfg) // encoding/json sorts map keys
+	if err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	if p, ok := h.profiles[string(key)]; ok {
+		h.mu.Unlock()
+
+		return p, nil
+	}
+	h.mu.Unlock()
+
+	p, err := buildProfile(cfg)
+	if err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	if existing, ok := h.profiles[string(key)]; ok { // lost a race; keep one API
+		p = existing
+	} else {
+		h.profiles[string(key)] = p
+	}
+	h.mu.Unlock()
+
+	return p, nil
+}
+
+func (h *Handler) setPCProfile(pcHandle string, p *apiProfile) {
+	h.mu.Lock()
+	h.pcProfiles[pcHandle] = p
+	h.mu.Unlock()
+}
+
+func (h *Handler) forgetPCProfile(pcHandle string) {
+	h.mu.Lock()
+	delete(h.pcProfiles, pcHandle)
+	h.mu.Unlock()
+}
+
+// pcProfile returns the profile a PeerConnection was created with (the session
+// default for connections created before per-PC settings existed).
+func (h *Handler) pcProfile(pcHandle string) *apiProfile {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if p, ok := h.pcProfiles[pcHandle]; ok {
+		return p
+	}
+
+	return h.defaultProfile
 }
 
 // startDCSendGoroutine allocates per-DC send state, registers it on the
@@ -67,8 +161,8 @@ func NewHandlerWithConfig(registry *Registry, sendEvent func(Message), cfg DCCon
 // from any WebSocket connection, not just the one that created the DC —
 // essential for cross-isolate use where the creating connection may already
 // be closed by the time another isolate sends.
-func (h *Handler) startDCSendGoroutine(dc *webrtc.DataChannel, dcHandle string) {
-	state := newDCSendState(h.dcConfig)
+func (h *Handler) startDCSendGoroutine(dc *webrtc.DataChannel, dcHandle string, profile *apiProfile) {
+	state := newDCSendState(h.dcConfig, profile.detach)
 	if !h.registry.RegisterDCSendState(dcHandle, state) {
 		// Already registered (shouldn't happen — RegisterChild gives unique
 		// handles).
@@ -169,7 +263,7 @@ var errDetachedNotOpen = errors.New("data channel is not open")
 // channels write through the detached ReadWriteCloser, which blocks while the
 // SCTP send buffer is full when enable_data_channel_block_write is set.
 func (h *Handler) doSend(dc *webrtc.DataChannel, state *DCSendState, w dcSendWork) error {
-	if h.detach {
+	if state.detach {
 		raw := state.detached()
 		if raw == nil {
 			return errDetachedNotOpen
@@ -232,12 +326,15 @@ func (h *Handler) HandleMessage(msg *Message) Message {
 	}
 }
 
+// cfgOrNil narrows a decoded settings_engine value to a map, or nil.
+func cfgOrNil(v interface{}) map[string]interface{} {
+	cfg, _ := v.(map[string]interface{})
+
+	return cfg
+}
+
 func (h *Handler) handleInit(msg *Message) Message {
-	se := webrtc.SettingEngine{}
 	if cfg, ok := msg.Data["settings_engine"].(map[string]interface{}); ok {
-		if err := applySettingsEngine(&se, cfg); err != nil {
-			return ErrorResponse(msg.ID, "INVALID_REQUEST", err.Error(), false, "")
-		}
 		if v, _ := cfg["enable_tracing"].(bool); v {
 			StartTracing("bridge")
 		}
@@ -250,14 +347,13 @@ func (h *Handler) handleInit(msg *Message) Message {
 			h.dcConfig.SendQueueDepth = int(v)
 		}
 	}
-	h.detach, h.maxMessageSize = false, 0
-	if cfg, ok := msg.Data["settings_engine"].(map[string]interface{}); ok {
-		h.detach, _ = cfg["detach_data_channels"].(bool)
-		if v, ok := toInt(cfg["sctp_max_message_size"]); ok {
-			h.maxMessageSize = int(v)
-		}
+	profile, err := buildProfile(cfgOrNil(msg.Data["settings_engine"]))
+	if err != nil {
+		return ErrorResponse(msg.ID, "INVALID_REQUEST", err.Error(), false, "")
 	}
-	h.api = webrtc.NewAPI(webrtc.WithSettingEngine(se))
+	h.mu.Lock()
+	h.defaultProfile = profile
+	h.mu.Unlock()
 	return AckResponse("init", msg.ID, "", map[string]interface{}{
 		"version": "1.0.0",
 	})
@@ -330,12 +426,20 @@ func (h *Handler) handlePCCreate(msg *Message) Message {
 		}
 	}
 
-	pc, err := h.api.NewPeerConnection(config)
+	profile := h.defaultProfile
+	if cfg := cfgOrNil(msg.Data["settings_engine"]); cfg != nil {
+		var perr error
+		if profile, perr = h.profileFor(cfg); perr != nil {
+			return ErrorResponse(msg.ID, "INVALID_REQUEST", perr.Error(), false, "")
+		}
+	}
+	pc, err := profile.api.NewPeerConnection(config)
 	if err != nil {
 		return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, "")
 	}
 
 	handle := h.registry.Register(pc)
+	h.setPCProfile(handle, profile) // before callbacks: a remote DataChannel needs it
 	h.setupPCCallbacks(pc, handle)
 
 	return AckResponse("pc:create", msg.ID, handle, map[string]interface{}{
@@ -390,9 +494,10 @@ func (h *Handler) setupPCCallbacks(pc *webrtc.PeerConnection, handle string) {
 				log.Printf("PANIC in OnDataChannel callback for %s: %v", handle, r)
 			}
 		}()
+		profile := h.pcProfile(handle)
 		dcHandle := h.registry.RegisterChild(dc, handle)
-		h.startDCSendGoroutine(dc, dcHandle) // before callbacks: a detached OnOpen needs the send state
-		h.setupDCCallbacks(dc, dcHandle)
+		h.startDCSendGoroutine(dc, dcHandle, profile) // before callbacks: a detached OnOpen needs the send state
+		h.setupDCCallbacks(dc, dcHandle, profile)
 		h.sendEvent(Event("event:dataChannel", handle, map[string]interface{}{
 			"type":      "dataChannel",
 			"dc_handle": dcHandle,
@@ -402,7 +507,7 @@ func (h *Handler) setupPCCallbacks(pc *webrtc.PeerConnection, handle string) {
 	})
 }
 
-func (h *Handler) setupDCCallbacks(dc *webrtc.DataChannel, dcHandle string) {
+func (h *Handler) setupDCCallbacks(dc *webrtc.DataChannel, dcHandle string, profile *apiProfile) {
 	// A detached channel is not in pion's close notifications (pion drops it
 	// from the transport on Detach and runs no read loop), so the bridge's read
 	// loop reports the close itself; once guards against a duplicate.
@@ -421,7 +526,7 @@ func (h *Handler) setupDCCallbacks(dc *webrtc.DataChannel, dcHandle string) {
 				log.Printf("PANIC in OnOpen callback for %s: %v", dcHandle, r)
 			}
 		}()
-		if h.detach {
+		if profile.detach {
 			// Pion requires Detach inside OnOpen when detaching is enabled.
 			raw, err := dc.Detach()
 			if err != nil {
@@ -434,7 +539,7 @@ func (h *Handler) setupDCCallbacks(dc *webrtc.DataChannel, dcHandle string) {
 			h.sendEvent(Event("event:dataChannelOpen", dcHandle, map[string]interface{}{
 				"type": "open",
 			}))
-			go h.readDetached(raw, dcHandle, emitClose)
+			go h.readDetached(raw, dcHandle, profile.maxMessageSize, emitClose)
 			return
 		}
 		h.sendEvent(Event("event:dataChannelOpen", dcHandle, map[string]interface{}{
@@ -451,7 +556,7 @@ func (h *Handler) setupDCCallbacks(dc *webrtc.DataChannel, dcHandle string) {
 		emitClose()
 	})
 
-	if h.detach {
+	if profile.detach {
 		return // messages are read by readDetached, OnMessage never fires
 	}
 
@@ -483,9 +588,9 @@ func (h *Handler) setupDCCallbacks(dc *webrtc.DataChannel, dcHandle string) {
 // message as the same event:dataChannelMessage an attached channel produces,
 // grows its buffer for large messages up to sctp_max_message_size, and reports
 // the close when the channel ends.
-func (h *Handler) readDetached(raw datachannel.ReadWriteCloser, dcHandle string, emitClose func()) {
+func (h *Handler) readDetached(raw datachannel.ReadWriteCloser, dcHandle string, maxMessageSize int, emitClose func()) {
 	defer emitClose()
-	limit := h.maxMessageSize
+	limit := maxMessageSize
 	if limit <= 0 {
 		limit = 1073741823 // pion's default SCTP max message size; the buffer grows on demand
 	}
@@ -668,6 +773,7 @@ func (h *Handler) handlePCClose(msg *Message) Message {
 		return errMsg
 	}
 
+	h.forgetPCProfile(msg.Handle)
 	if err := pc.Close(); err != nil {
 		return ErrorResponse(msg.ID, "INTERNAL_ERROR", err.Error(), false, msg.Handle)
 	}
@@ -705,8 +811,9 @@ func (h *Handler) handlePCCreateDc(msg *Message) Message {
 	}
 
 	dcHandle := h.registry.RegisterChild(dc, msg.Handle)
-	h.startDCSendGoroutine(dc, dcHandle) // before callbacks: a detached OnOpen needs the send state
-	h.setupDCCallbacks(dc, dcHandle)
+	profile := h.pcProfile(msg.Handle)
+	h.startDCSendGoroutine(dc, dcHandle, profile) // before callbacks: a detached OnOpen needs the send state
+	h.setupDCCallbacks(dc, dcHandle, profile)
 
 	return AckResponse("pc:createDc", msg.ID, msg.Handle, map[string]interface{}{
 		"dc_handle": dcHandle,
@@ -840,6 +947,7 @@ func (h *Handler) handleResourceDelete(msg *Message) Message {
 		return ErrorResponse(msg.ID, "INVALID_REQUEST", "missing handle", false, "")
 	}
 
+	h.forgetPCProfile(msg.Handle) // no-op for non-PC handles
 	if err := h.registry.Delete(msg.Handle); err != nil {
 		return ErrorResponse(msg.ID, "NOT_FOUND", err.Error(), false, msg.Handle)
 	}

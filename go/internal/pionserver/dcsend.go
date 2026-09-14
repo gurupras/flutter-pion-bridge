@@ -61,8 +61,10 @@ type DCSendState struct {
 	cond      *sync.Cond
 	threshold uint64
 	closeOnce sync.Once
-	// raw is the detached ReadWriteCloser once the channel opened, when the
-	// session detaches data channels; nil otherwise.
+	// detach records whether this channel's PeerConnection detaches channels.
+	detach bool
+	// raw is the detached ReadWriteCloser once the channel opened, when this
+	// channel is detached; nil otherwise.
 	raw atomic.Pointer[datachannel.ReadWriteCloser]
 }
 
@@ -75,11 +77,12 @@ func (s *DCSendState) detached() datachannel.ReadWriteCloser {
 	return nil
 }
 
-func newDCSendState(cfg DCConfig) *DCSendState {
+func newDCSendState(cfg DCConfig, detach bool) *DCSendState {
 	s := &DCSendState{
 		work:      make(chan dcSendWork, cfg.SendQueueDepth),
 		done:      make(chan struct{}),
 		threshold: cfg.BufferedAmountLowThreshold,
+		detach:    detach,
 	}
 	s.cond = sync.NewCond(&sync.Mutex{})
 	return s

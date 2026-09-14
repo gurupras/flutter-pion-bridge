@@ -237,7 +237,7 @@ func TestDCSend_WithinDCOrdering_FIFO(t *testing.T) {
 // at-or-below threshold — i.e. it must NEVER park on cond.Wait() without a
 // real reason to wait.
 func TestDCSendState_WaitForBuffer_ExitsWhenBelowThreshold(t *testing.T) {
-	s := newDCSendState(DefaultDCConfig)
+	s := newDCSendState(DefaultDCConfig, false)
 	defer s.closeState()
 
 	// Threshold is 512 KB by default.  A nil DC would crash on
@@ -278,7 +278,7 @@ func TestDCSendState_WaitForBuffer_ExitsWhenBelowThreshold(t *testing.T) {
 // and return false.  This exercises the "DC closed mid-wait" path without
 // requiring a real WebRTC connection with actual buffered data.
 func TestDCSendState_CloseState_DoesNotDeadlock(t *testing.T) {
-	s := newDCSendState(DefaultDCConfig)
+	s := newDCSendState(DefaultDCConfig, false)
 
 	api := webrtc.NewAPI()
 	pc, err := api.NewPeerConnection(webrtc.Configuration{})

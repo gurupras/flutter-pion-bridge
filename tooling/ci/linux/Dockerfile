@@ -16,6 +16,12 @@ ARG ANDROID_SYSTEM_IMAGE=system-images;android-34;google_apis;x86_64
 ARG ANDROID_NDK_VERSION=28.2.13676358
 
 ENV DEBIAN_FRONTEND=noninteractive
+# CI runs a rootless Docker daemon, where container root maps to an unprivileged
+# host uid: tar cannot restore the ownership recorded in Flutter's archives and
+# fails ("Cannot change ownership to uid ..., Invalid argument"), taking
+# `flutter precache` down with it. GNU tar reads TAR_OPTIONS from the
+# environment, which covers Flutter's own tar calls at build and at run time.
+ENV TAR_OPTIONS=--no-same-owner
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git unzip xz-utils zip python3 \
         build-essential \

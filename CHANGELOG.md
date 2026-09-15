@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 4.3.1
 
 - **SCTP: bounded SACKs.** Backports upstream pion/sctp 597b321 ("Bound
   outbound SACK packets by the MTU", not yet in a release) into the vendored

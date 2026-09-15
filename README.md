@@ -338,7 +338,7 @@ message, so the loop above needs no watermarks and memory stays bounded.
 measured the same in every cell below.
 
 Measured on a netem-shaped loopback (both peers in one process, pion/sctp
-v1.10.0 with the fixes in this release, 10–15 s steady-state windows; lossless
+v1.10.0 with the 4.3.1 fixes, 10–15 s steady-state windows; lossless
 unless noted). Mbps:
 
 | path | 1 connection, default 1 MiB window, paced sender | 1 connection, 8 MiB, detached + blocking | iperf3 TCP |

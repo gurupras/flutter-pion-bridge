@@ -26,6 +26,9 @@ if ! command -v gomobile &>/dev/null; then
 fi
 
 echo "Building iOS xcframework via gomobile bind …"
+# xcodebuild -create-xcframework refuses to overwrite: without this, a second
+# build in the same tree fails with "an item with the same name already exists".
+rm -rf "$OUT_DIR/PionBridgeGo.xcframework"
 cd "$GO_DIR"
 gomobile bind \
   -target ios \

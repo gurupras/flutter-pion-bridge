@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **SCTP: bounded SACKs.** Backports upstream pion/sctp 597b321 ("Bound
+  outbound SACK packets by the MTU", not yet in a release) into the vendored
+  fork. With a large receive buffer and scattered loss, SACKs outgrew the
+  peer's read buffer, were dropped with "short buffer" errors, and the
+  association died of T3 timeouts — reproduced at 8 MiB with tail-drop loss.
+- **SCTP: upstream RTO constants restored.** The fork's rtoMin of 100 ms sat
+  below the peer's 200 ms delayed-SACK timer, so an association that idles
+  between messages took spurious T3 timeouts and dropped to a one-MTU cwnd.
+  Several parallel connections sharing an 80 ms / 300 Mbit path delivered
+  ~40 Mbps in total; with upstream's values they saturate it (~255 Mbps). The
+  fork's test suite now passes in full.
+- README: "Tuning DataChannel throughput" — receive window, transport-paced
+  sends with detached blocking writes, and their caveats.
+
 ## 4.3.0
 
 - **Shared mode (desktop).** `PionBridge.initialize(mode: PionBridgeMode.shared)`

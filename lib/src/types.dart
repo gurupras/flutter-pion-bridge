@@ -131,6 +131,12 @@ class PionSettingsEngine {
   final bool? enableTracing;
 
   // Numeric settings
+
+  /// SCTP receive window in bytes (pion's `SetSCTPMaxReceiveBufferSize`;
+  /// pion defaults to 1 MiB). An association's throughput is capped at
+  /// roughly this ÷ RTT, so bulk transfer over latency wants it above the
+  /// path's BDP — 8 MiB is the measured recommendation. See the README's
+  /// "Tuning DataChannel throughput".
   final int? sctpMaxReceiveBufferSize;
   final int? sctpMaxMessageSize;
   final int? sctpMinCwnd;

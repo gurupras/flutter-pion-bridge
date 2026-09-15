@@ -130,7 +130,8 @@ Hot restart reinitialises the Dart layer and calls `startServer` again. The plug
 final bridge = await PionBridge.initialize(
   settingsEngine: PionSettingsEngine(
     // Increase SCTP receive buffer for high-throughput DataChannels
-    sctpMaxReceiveBufferSize: 4 * 1024 * 1024, // 4 MB
+    // (see "Tuning DataChannel throughput")
+    sctpMaxReceiveBufferSize: 8 * 1024 * 1024, // 8 MiB
 
     // Restrict ICE to a specific UDP port range (useful behind firewalls)
     ephemeralUdpPortMin: 50000,
@@ -285,11 +286,68 @@ final bridge = await PionBridge.initialize(
   granularity, not per channel.
 - **Both transports support it**, websocket and shared mode, and so does gomobile.
 - **What it is for:** bulk transfer. Blocking writes plus a large SCTP receive buffer pace
-  the sender against the transport instead of queueing inside pion.
+  the sender against the transport instead of queueing inside pion (see
+  [Tuning DataChannel throughput](#tuning-datachannel-throughput)).
 - **What it costs:** in a Partner spike, detaching made an *unordered, 0-retransmit*
   channel stall along with a busy reliable channel on a lossy link (~1 s p99 versus ~50 ms
   without detaching). Latency-sensitive traffic — input events, control messages — is
   better off on a non-detached bridge with a larger receive buffer.
+
+## Tuning DataChannel throughput
+
+Nothing below is a default; every knob is opt-in, and settings can be set per
+session (`initialize`) or per connection (`createPeerConnection`).
+
+**1. Raise the SCTP receive window.** pion's default `MaxReceiveBufferSize` is
+1 MiB, which caps an association at roughly window ÷ RTT no matter how fast the
+link is. `sctpMaxReceiveBufferSize: 8 * 1024 * 1024` is the measured
+recommendation; size it above your path's BDP (rate × RTT).
+
+**2. Pace sends against the transport.** A send loop that awaits
+`sendBinary(data, awaitDrain: false)` returns as soon as the bridge has handed
+the frame to pion, which queues it without limit: on an 80 ms path this
+ballooned to 3.8 GB of memory and throughput collapsed to a few Mbps. Either
+gate on `onBufferedAmountLow` (see [Backpressure Handling](#backpressure-handling)),
+or let writes block:
+
+```dart
+const bulk = PionSettingsEngine(
+  sctpMaxReceiveBufferSize: 8 * 1024 * 1024,
+  detachDataChannels: true,
+  enableDataChannelBlockWrite: true, // ignored without detachDataChannels
+);
+final pc = await bridge.createPeerConnection(settingsEngine: bulk);
+// ... after the channel opens, a plain loop is paced by SCTP:
+while (sending) {
+  await dc.sendBinary(nextChunk(), awaitDrain: false); // completes when SCTP accepts
+}
+```
+
+With blocking writes the send future completes only once pion has room for the
+message, so the loop above needs no watermarks and memory stays bounded.
+
+- **The write gate is per connection, not per channel.** pion lets one write
+  wait at a time across *all* channels of an association, so a control channel
+  on the same connection waits behind bulk writes. Put latency-sensitive
+  channels on a separate, non-detached connection.
+- **Keep unawaited sends per channel under `dcConfig.sendQueueDepth`** (32 by
+  default). The bridge enqueues sends without blocking only while that queue
+  has room; beyond it a blocked channel stalls the whole session.
+
+**3. The transport doesn't matter for throughput.** Websocket and shared mode
+measured the same in every cell below.
+
+Measured on a netem-shaped loopback (both peers in one process, pion/sctp
+v1.10.0 with the fixes in this release, 10–15 s steady-state windows; lossless
+unless noted). Mbps:
+
+| path | 1 connection, default 1 MiB window, paced sender | 1 connection, 8 MiB, detached + blocking | iperf3 TCP |
+|------|------|------|------|
+| 80 ms RTT / 300 Mbit | 97 | 263 | 237 |
+
+Loss changes the picture: on the same path with a shallow queue (tail-drop), a
+single association alternated between ~200 Mbps and a stall across identical
+runs. Don't benchmark lossy paths with one run.
 
 ## Media: codecs, transceivers and remote tracks
 

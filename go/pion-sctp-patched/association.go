@@ -3716,8 +3716,22 @@ func (a *Association) createSelectiveAckChunk() *chunkSelectiveAck {
 	sack := &chunkSelectiveAck{}
 	sack.cumulativeTSNAck = a.peerLastTSN()
 	sack.advertisedReceiverWindowCredit = a.getMyReceiverWindowCredit()
-	sack.duplicateTSN = a.payloadQueue.popDuplicates()
-	sack.gapAckBlocks = a.payloadQueue.getGapAckBlocks()
+	// Backport of upstream 597b321 ("Bound outbound SACK packets by the MTU",
+	// unreleased as of v1.11.1): with a large receive window and scattered
+	// loss, an unbounded gap-ack list made SACKs larger than the peer's
+	// receive buffer; the peer dropped them ("short buffer") and the
+	// association died of T3 timeouts.
+	const headerSize = commonHeaderSize + chunkHeaderSize + selectiveAckHeaderSize
+	maxEntries := 0
+	if mtu := a.MTU(); mtu > headerSize {
+		// Gap Ack Block Start/End are 16 bits each and a Duplicate TSN is 32
+		// bits, so every entry is 4 bytes; the chunk length field is 16 bits.
+		// https://www.rfc-editor.org/rfc/rfc9260.html#section-3.3.4
+		maxEntries = int(min(mtu-headerSize, 65535-chunkHeaderSize-selectiveAckHeaderSize) / 4)
+	}
+	sack.gapAckBlocks = a.payloadQueue.getGapAckBlocks(maxEntries)
+	duplicates := a.payloadQueue.popDuplicates()
+	sack.duplicateTSN = duplicates[:min(len(duplicates), maxEntries-len(sack.gapAckBlocks))]
 
 	return sack
 }

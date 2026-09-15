@@ -22,6 +22,29 @@ rootProject.allprojects {
 apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
+// ---------------------------------------------------------------------------
+// gomobile bindings: Java classes (pionbridge-go.jar) + libgojni.so per ABI.
+//
+// The binaries are not committed. scripts/build_android.sh writes them to
+// libs/ and src/main/jniLibs/; when that jar exists (local development) it is
+// used as-is. Otherwise the release archive matching pubspec.yaml's version is
+// downloaded from GitHub Releases, checked against the release's SHA256SUMS,
+// and extracted under build/.
+//
+// PION_BRIDGE_BUILD_FROM_SOURCE=1 instead reruns build_android.sh whenever go/
+// changes (needs Go, gomobile and the NDK).
+// PION_BRIDGE_BINARIES_BASE_URL replaces the release download URL, e.g. a
+// mirror, or file:///path/to/dist to try archives before publishing them.
+// ---------------------------------------------------------------------------
+def pluginRoot      = project.projectDir.parentFile
+def pionVersion     = file("${pluginRoot}/pubspec.yaml").readLines()
+        .find { it ==~ /^version:.*/ }
+        .replaceFirst(/^version:\s*/, '').replaceFirst(/[+\s].*$/, '')
+def buildFromSource = System.getenv('PION_BRIDGE_BUILD_FROM_SOURCE') == '1'
+def localJar        = file("${project.projectDir}/libs/pionbridge-go.jar")
+def useDownload     = !buildFromSource && !localJar.exists()
+def downloadDir     = project.layout.buildDirectory.dir("pionbridge/${pionVersion}").get().asFile
+
 android {
     namespace 'io.filemingo.pionbridge'
     compileSdk 34
@@ -38,29 +61,94 @@ android {
     kotlinOptions {
         jvmTarget = '1.8'
     }
+
+    if (useDownload) {
+        sourceSets.main.jniLibs.srcDir(new File(downloadDir, 'jniLibs'))
+    }
 }
 
 dependencies {
     implementation 'androidx.annotation:annotation:1.7.1'
-    // gomobile Java bindings — built by scripts/build_android.sh.
-    // builtBy ties the artifact to the buildGoBridge task so every consumer
+    // builtBy ties the jar to the task producing it so every consumer
     // (including the app's desugar task) gets a proper task dependency;
     // without it Gradle 8 fails validation with "uses this output of task
-    // ':pion_bridge:buildGoBridge' without declaring a dependency".
-    implementation files('libs/pionbridge-go.jar') {
-        builtBy 'buildGoBridge'
+    // ... without declaring a dependency".
+    if (useDownload) {
+        implementation files(new File(downloadDir, 'pionbridge-go.jar')) {
+            builtBy 'fetchGoBridge'
+        }
+    } else if (buildFromSource) {
+        implementation files(localJar) {
+            builtBy 'buildGoBridge'
+        }
+    } else {
+        implementation files(localJar)
+    }
+}
+
+tasks.register('fetchGoBridge') {
+    description = 'Download the pion bridge gomobile bindings for this release.'
+    group       = 'build'
+
+    inputs.property('version', pionVersion)
+    inputs.property('baseUrl', System.getenv('PION_BRIDGE_BINARIES_BASE_URL') ?: '')
+    outputs.dir(downloadDir)
+
+    doLast {
+        def base = System.getenv('PION_BRIDGE_BINARIES_BASE_URL') ?:
+                "https://github.com/gurupras/flutter-pion-bridge/releases/download/v${pionVersion}"
+        def name = "pionbridge-${pionVersion}-android.tar.gz"
+        def hint = 'Build the binaries locally (scripts/build_android.sh), set ' +
+                'PION_BRIDGE_BUILD_FROM_SOURCE=1, or set PION_BRIDGE_BINARIES_BASE_URL.'
+        def fetch = { String url, File dest ->
+            try {
+                // HttpURLConnection follows GitHub's https -> https asset redirect.
+                URI.create(url).toURL().openStream().withStream { input ->
+                    dest.withOutputStream { it << input }
+                }
+            } catch (IOException e) {
+                throw new GradleException("pion_bridge: downloading ${url} failed: ${e}\n${hint}", e)
+            }
+        }
+
+        def work = new File(downloadDir.parentFile, 'download')
+        project.delete(work, downloadDir)
+        work.mkdirs()
+
+        def sums = new File(work, 'SHA256SUMS')
+        fetch("${base}/SHA256SUMS", sums)
+        def expected = sums.readLines()
+                .collect { it.trim().split(/\s+/, 2) }
+                .find { it.size() == 2 && it[1].replaceFirst(/^\*/, '') == name }
+        if (expected == null) {
+            throw new GradleException("pion_bridge: ${name} is not listed in ${base}/SHA256SUMS\n${hint}")
+        }
+
+        def archive = new File(work, name)
+        fetch("${base}/${name}", archive)
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        archive.eachByte(1 << 16) { buf, n -> digest.update(buf, 0, n) }
+        def actual = digest.digest().encodeHex().toString()
+        if (!actual.equalsIgnoreCase(expected[0])) {
+            throw new GradleException("pion_bridge: ${name} SHA-256 mismatch: expected ${expected[0]}, got ${actual}")
+        }
+
+        project.copy {
+            from project.tarTree(project.resources.gzip(archive))
+            into downloadDir
+        }
+        project.delete(work)
     }
 }
 
 // ---------------------------------------------------------------------------
-// Auto-rebuild the gomobile AAR when Go source changes.
+// PION_BRIDGE_BUILD_FROM_SOURCE=1: rebuild the gomobile AAR when Go source changes.
 //
 // Gradle's incremental task machinery compares inputs (go/ source tree) to
 // outputs (pionbridge-go.jar).  The task only re-runs when something in the
 // Go source actually changed, so normal Flutter runs add no overhead.
 // ---------------------------------------------------------------------------
 def goSrcDir    = file("${project.projectDir.parent}/go")
-def buildScript = file("${project.projectDir.parent}/scripts/build_android.sh")
 def outputJar   = file("${project.projectDir}/libs/pionbridge-go.jar")
 
 tasks.register('buildGoBridge', Exec) {
@@ -86,4 +174,8 @@ tasks.register('buildGoBridge', Exec) {
     }
 }
 
-preBuild.dependsOn 'buildGoBridge'
+if (useDownload) {
+    preBuild.dependsOn 'fetchGoBridge'
+} else if (buildFromSource) {
+    preBuild.dependsOn 'buildGoBridge'
+}

@@ -20,10 +20,7 @@ target_include_directories(${PLUGIN_NAME} INTERFACE
 target_link_libraries(${PLUGIN_NAME} PRIVATE flutter)
 target_link_libraries(${PLUGIN_NAME} PRIVATE PkgConfig::GTK)
 
-# Bundle the pionbridge binary alongside the plugin.
-# build_linux.sh emits amd64 as "pionbridge" and arm64 as "pionbridge_arm64";
-# pick the one matching the target arch and install it AS "pionbridge" so the
-# plugin's runtime lookup (lib/pionbridge) is unchanged on every arch.
+# Bundle the pionbridge sidecar and shared library alongside the plugin.
 # Apps that only use shared mode with their own library (e.g. one that links
 # package cshared together with their media code) can skip bundling the
 # sidecar and libpionbridge: set(PION_BRIDGE_BUNDLE_BINARIES OFF) before the
@@ -33,28 +30,35 @@ if(NOT PION_BRIDGE_BUNDLE_BINARIES)
   return()
 endif()
 
+# build_linux.sh leaves local builds in bundle/lib (arm64 with an _arm64
+# suffix); without them, the release archive for this version is downloaded
+# (build_support/pion_bridge_binaries.cmake). Both are installed under their
+# canonical names so the runtime lookup (lib/pionbridge) is the same everywhere.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-  set(PIONBRIDGE_BINARY "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/pionbridge_arm64")
+  set(PIONBRIDGE_ARCH_SUFFIX "_arm64")
+  set(PIONBRIDGE_PLATFORM "linux-arm64")
 else()
-  set(PIONBRIDGE_BINARY "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/pionbridge")
+  set(PIONBRIDGE_ARCH_SUFFIX "")
+  set(PIONBRIDGE_PLATFORM "linux-x64")
 endif()
-if(EXISTS "${PIONBRIDGE_BINARY}")
-  install(FILES "${PIONBRIDGE_BINARY}"
-          DESTINATION "lib"
-          RENAME "pionbridge"
-          PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
-                      GROUP_READ GROUP_EXECUTE
-                      WORLD_READ WORLD_EXECUTE)
+set(PIONBRIDGE_BINARY "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/pionbridge${PIONBRIDGE_ARCH_SUFFIX}")
+# Shared mode: the same server as an in-process library, loaded by the Dart
+# side with dart:ffi (PionBridgeMode.shared). A local build may lack it (no
+# cross compiler for the arch); release archives always carry it.
+set(PIONBRIDGE_SHARED_LIB "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/libpionbridge${PIONBRIDGE_ARCH_SUFFIX}.so")
+if(NOT EXISTS "${PIONBRIDGE_BINARY}")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/../build_support/pion_bridge_binaries.cmake")
+  pion_bridge_download_binaries("${PIONBRIDGE_PLATFORM}" PIONBRIDGE_DOWNLOADED)
+  set(PIONBRIDGE_BINARY "${PIONBRIDGE_DOWNLOADED}/pionbridge")
+  set(PIONBRIDGE_SHARED_LIB "${PIONBRIDGE_DOWNLOADED}/libpionbridge.so")
 endif()
 
-# Shared mode: the same server as an in-process library, loaded by the Dart
-# side with dart:ffi (PionBridgeMode.shared). Optional — only bundled when
-# build_linux.sh has produced it. Installed as libpionbridge.so on every arch.
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-  set(PIONBRIDGE_SHARED_LIB "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/libpionbridge_arm64.so")
-else()
-  set(PIONBRIDGE_SHARED_LIB "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/libpionbridge.so")
-endif()
+install(FILES "${PIONBRIDGE_BINARY}"
+        DESTINATION "lib"
+        RENAME "pionbridge"
+        PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+                    GROUP_READ GROUP_EXECUTE
+                    WORLD_READ WORLD_EXECUTE)
 if(EXISTS "${PIONBRIDGE_SHARED_LIB}")
   install(FILES "${PIONBRIDGE_SHARED_LIB}"
           DESTINATION "lib"

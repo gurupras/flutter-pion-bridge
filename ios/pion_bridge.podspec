@@ -1,3 +1,5 @@
+require File.expand_path('../build_support/pion_bridge_binaries', __dir__)
+
 Pod::Spec.new do |s|
   s.name             = 'pion_bridge'
   s.version          = '0.1.0'
@@ -10,8 +12,13 @@ Pod::Spec.new do |s|
   s.dependency 'Flutter'
   s.platform = :ios, '13.0'
 
-  # Gomobile-generated xcframework (built by scripts/build_ios.sh)
-  s.vendored_frameworks = 'Frameworks/PionBridgeGo.xcframework'
+  # Gomobile-generated xcframework: a local build (scripts/build_ios.sh) when
+  # present, otherwise this version's release archive.
+  framework_dir = 'Frameworks'
+  unless File.exist?(File.join(__dir__, framework_dir, 'PionBridgeGo.xcframework'))
+    framework_dir = PionBridgeBinaries.download(__dir__, 'ios')
+  end
+  s.vendored_frameworks = "#{framework_dir}/PionBridgeGo.xcframework"
 
   s.pod_target_xcconfig = {
     'DEFINES_MODULE' => 'YES',

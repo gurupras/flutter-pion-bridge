@@ -11,3 +11,14 @@ go/libpionbridge_test.so
 go/libpionbridge_test.dylib
 go/libpionbridge_test.dll
 go/.libpionbridge_test.lock
+
+# Native binaries are never committed: build them locally with scripts/build_*.sh,
+# or let the platform build download the release archives (build_support/).
+/dist/
+/linux/bundle/
+/windows/runner/resources/pionbridge.*
+/macos/Resources/pionbridge
+/macos/Libraries/
+/macos/Downloaded/
+/ios/Frameworks/
+/ios/Downloaded/

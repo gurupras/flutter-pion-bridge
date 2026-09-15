@@ -35,13 +35,21 @@ if(NOT PION_BRIDGE_BUNDLE_BINARIES)
   return()
 endif()
 
+# build_windows.sh leaves local builds in runner/resources; without them, the
+# release archive for this version is downloaded
+# (build_support/pion_bridge_binaries.cmake).
 set(PIONBRIDGE_BUNDLED "")
 set(PIONBRIDGE_EXE "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/pionbridge.exe")
-if(EXISTS "${PIONBRIDGE_EXE}")
-  list(APPEND PIONBRIDGE_BUNDLED "${PIONBRIDGE_EXE}")
-endif()
 # Shared mode (PionBridgeMode.shared): the in-process DLL, loaded with dart:ffi.
+# A local build may lack it (no MinGW); release archives always carry it.
 set(PIONBRIDGE_DLL "${CMAKE_CURRENT_SOURCE_DIR}/runner/resources/pionbridge.dll")
+if(NOT EXISTS "${PIONBRIDGE_EXE}")
+  include("${CMAKE_CURRENT_SOURCE_DIR}/../build_support/pion_bridge_binaries.cmake")
+  pion_bridge_download_binaries("windows-x64" PIONBRIDGE_DOWNLOADED)
+  set(PIONBRIDGE_EXE "${PIONBRIDGE_DOWNLOADED}/pionbridge.exe")
+  set(PIONBRIDGE_DLL "${PIONBRIDGE_DOWNLOADED}/pionbridge.dll")
+endif()
+list(APPEND PIONBRIDGE_BUNDLED "${PIONBRIDGE_EXE}")
 if(EXISTS "${PIONBRIDGE_DLL}")
   list(APPEND PIONBRIDGE_BUNDLED "${PIONBRIDGE_DLL}")
 endif()

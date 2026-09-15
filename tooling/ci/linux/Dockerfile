@@ -1,12 +1,18 @@
-# Release CI builder for pion_bridge: runs the host test layers and builds the
+# Release CI builder for pion_bridge: runs the host test layers, builds the
 # Android (gomobile), Linux amd64/arm64 and Windows binaries, sidecars and
-# shared libraries alike. Pinned inputs; bump them deliberately.
+# shared libraries alike, and runs the example app's e2e test on Linux (Xvfb)
+# and an Android emulator (needs --device /dev/kvm). Pinned inputs; bump them
+# deliberately.
 FROM ubuntu:24.04
 
 ARG GO_VERSION=1.26.2
 ARG FLUTTER_VERSION=3.41.6
 ARG ANDROID_CMDLINE_TOOLS=13114758
 ARG ANDROID_PLATFORM=android-34
+# What Flutter 3.41 apps compile against, and the emulator image the e2e runs.
+ARG ANDROID_APP_PLATFORM=android-36
+ARG ANDROID_BUILD_TOOLS=36.0.0
+ARG ANDROID_SYSTEM_IMAGE=system-images;android-34;google_apis;x86_64
 ARG ANDROID_NDK_VERSION=28.2.13676358
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -16,6 +22,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
         gcc-mingw-w64-x86-64 \
         openjdk-17-jdk-headless \
+        clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+        xvfb xauth libgl1-mesa-dri \
+        libpulse0 libnss3 libxcomposite1 libxcursor1 libxdamage1 libxi6 \
+        libxtst6 libxkbfile1 libasound2t64 libgbm1 libdrm2 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xz
@@ -30,11 +40,14 @@ RUN mkdir -p "$ANDROID_HOME/cmdline-tools" \
     && rm /tmp/cmdline-tools.zip \
     && yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null \
     && "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
-        "platforms;${ANDROID_PLATFORM}" "ndk;${ANDROID_NDK_VERSION}" > /dev/null
+        "platforms;${ANDROID_PLATFORM}" "ndk;${ANDROID_NDK_VERSION}" \
+        "platforms;${ANDROID_APP_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}" \
+        platform-tools emulator "${ANDROID_SYSTEM_IMAGE}" > /dev/null
 
 RUN git clone --depth 1 --branch "${FLUTTER_VERSION}" https://github.com/flutter/flutter.git /opt/flutter \
     && git config --global --add safe.directory '*' \
     && /opt/flutter/bin/flutter config --no-analytics \
-    && /opt/flutter/bin/flutter precache --universal --linux
+    && /opt/flutter/bin/flutter precache --universal --linux --android
 
-ENV PATH=/usr/local/go/bin:/root/go/bin:/opt/flutter/bin:$PATH
+ENV ANDROID_SYSTEM_IMAGE=${ANDROID_SYSTEM_IMAGE}
+ENV PATH=/usr/local/go/bin:/root/go/bin:/opt/flutter/bin:/opt/android-sdk/platform-tools:/opt/android-sdk/emulator:$PATH

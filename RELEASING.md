@@ -27,27 +27,46 @@ they exist instead of downloading.
 - **Stale local binaries win.** Rebuild after Go changes, or delete them to fall
   back to the release download.
 - **`PION_BRIDGE_BINARIES_BASE_URL`** replaces the download location for every
-  platform. For example, `file://$PWD/dist` tests archives from
-  `package_release.sh` before publishing them.
+  platform and forces the download even when local builds exist. For example,
+  `file://$PWD/dist` tests archives from `package_release.sh` before publishing
+  them. Downloads are cached per version (in the app's build directory, and in
+  `ios/Downloaded`/`macos/Downloaded`), so clear those when re-testing new
+  archives of the same version.
+
+## CI pipeline
+
+`Jenkinsfile` (Jenkins job **flutter-pion-bridge-release**) builds every
+platform from one commit and tests the packaged archives before anything can be
+published:
+
+| Stage | Where | What |
+|---|---|---|
+| Host tests | builder container | `tooling/ci/test.sh` (Go, race, SCTP fork, Dart) |
+| Android, Linux, Windows | builder container on dileant | build + package, then e2e on Linux (Xvfb) and an Android emulator |
+| macOS, iOS | disposable Tart VM on mini | build + package, then e2e on macOS and the `ci-iphone` simulator |
+| Windows e2e | disposable Windows VM on dileant | e2e on Windows desktop |
+| Publish | builder container | only when `PUBLISH` is `draft` or `release` |
+
+The e2e test is `example/integration_test/e2e_test.dart`: two peers exchange
+text and binary over a DataChannel in every bridge mode the platform ships
+(websocket everywhere, shared on desktop, plus websocket↔shared interop). The
+`tooling/ci/e2e/` scripts remove local build outputs first, so the example app
+downloads the archives under test through `PION_BRIDGE_BINARIES_BASE_URL`.
+Run one locally after packaging, e.g. `scripts/package_release.sh linux-x64 &&
+tooling/ci/e2e/linux.sh`.
 
 ## Cutting a release
 
 1. Bump `version:` in `pubspec.yaml` and add a matching `## <version>` section
    to `CHANGELOG.md`. Commit and push to `master`.
-2. In Jenkins, run **flutter-pion-bridge-release** (Build Now).
-3. The pipeline (`Jenkinsfile`):
-   - **Prepare:** resolves the version and commit, and fails if `v<version>` is
-     already tagged or released, or the changelog section is missing.
-   - **In parallel:**
-     - host test layers (`tooling/ci/test.sh`)
-     - Android/Linux/Windows builds in the builder container (`tooling/ci/linux/`)
-     - macOS/iOS builds in a disposable Tart VM (`tooling/ci/macos/`)
-   - **Publish:** uploads every archive plus `SHA256SUMS` to a draft release,
-     then publishes it. Publishing creates the `v<version>` tag on the built commit.
+2. In Jenkins, run **flutter-pion-bridge-release** with `PUBLISH=release`
+   (`draft` to stop at an unpublished draft; `none`, the default, only builds
+   and tests).
+3. Prepare fails fast if `v<version>` is already tagged or released, or the
+   changelog section is missing. After every build and e2e stage passes,
+   Publish uploads the archives plus `SHA256SUMS` to a draft release and
+   publishes it, which creates the `v<version>` tag on the tested commit.
 4. Apps pick it up by depending on the tag (or, later, the pub.dev version).
-
-Tick **DRAFT_ONLY** to run everything but stop at the unpublished draft, e.g.
-to check a pipeline change or inspect the archives before releasing.
 
 A failed run leaves no tag, only a draft release, which the next run replaces.
 A published version is never rebuilt: fix forward with a new version. The

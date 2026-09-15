@@ -1,14 +1,21 @@
 @Library('homelab-shared-lib') _
 
-// Release pipeline for pion_bridge (see RELEASING.md). Run it by hand after
-// pushing a version bump in pubspec.yaml and its CHANGELOG.md section to master.
+// Build, e2e-test and (optionally) release pion_bridge. See RELEASING.md.
 //
-// It runs the host test layers and builds every platform's native binaries in
-// parallel (Android/Linux/Windows in a Docker container on dileant, macOS/iOS in
-// a disposable Tart VM on mini), then publishes them as GitHub Release
-// v<version>; publishing is what creates the tag, on exactly the commit that was
-// tested and built. Until that last step succeeds nothing is tagged or public:
-// a failed run leaves at most a draft release, which the next run replaces.
+// Every run builds all platforms' native binaries from one commit and runs the
+// example app's e2e test against the packaged archives — the files a release
+// would ship — on every platform and in every bridge mode it has:
+//   Android, Linux, Windows  built in a Docker container on dileant; Linux and
+//                            an Android emulator tested in that container,
+//                            Windows in a disposable KVM VM
+//   macOS, iOS               built and tested (desktop + simulator) in a
+//                            disposable Tart VM on mini
+// plus the host test layers.
+//
+// PUBLISH=none (default) stops there. draft/release then upload the archives to
+// a GitHub Release v<version> (draft leaves it unpublished); publishing is what
+// creates the tag, on exactly the commit that was tested and built. A failed
+// run tags nothing and leaves at most a draft, which the next run replaces.
 
 @NonCPS
 def pubspecVersion(String pubspec) {
@@ -17,25 +24,38 @@ def pubspecVersion(String pubspec) {
 }
 
 // Every stage works on the commit Prepare resolved, even if master moves mid-run.
-def checkoutReleaseCommit() {
+def checkoutRunCommit() {
     deleteDir()
     checkout scm
-    sh "git checkout -q --detach ${env.PB_COMMIT}"
+    if (isUnix()) {
+        sh "git checkout -q --detach ${env.PB_COMMIT}"
+    } else {
+        bat "git checkout -q --detach ${env.PB_COMMIT}"
+    }
 }
 
 // Runs a command in the builder image with the workspace mounted. Named volumes
-// keep Go and pub caches warm between runs.
-def inBuilder(String command) {
-    withEnv(["PB_COMMAND=${command}"]) {
+// keep Go, pub and Gradle caches warm between runs.
+def inBuilder(String command, String dockerArgs = '') {
+    withEnv(["PB_COMMAND=${command}", "PB_DOCKER_ARGS=${dockerArgs}"]) {
         sh '''
-            docker run --rm \
+            docker run --rm $PB_DOCKER_ARGS \
                 -e PB_COMMAND -e PB_VERSION -e PB_COMMIT -e GH_TOKEN \
                 -v "$WORKSPACE":/workspace -w /workspace \
                 -v pion-bridge-go-mod:/root/go/pkg/mod \
                 -v pion-bridge-go-build:/root/.cache/go-build \
                 -v pion-bridge-pub-cache:/root/.pub-cache \
+                -v pion-bridge-gradle:/root/.gradle \
                 pion-bridge-builder:latest bash -c "$PB_COMMAND"
         '''
+    }
+}
+
+def githubToken(Closure body) {
+    withCredentials([usernamePassword(credentialsId: 'gurupras-jenkins-ci-cd',
+                                      usernameVariable: 'GH_APP_ID',
+                                      passwordVariable: 'GH_TOKEN')]) {
+        body()
     }
 }
 
@@ -50,8 +70,8 @@ pipeline {
     }
 
     parameters {
-        booleanParam(name: 'DRAFT_ONLY', defaultValue: false,
-                     description: 'Build and upload everything to a draft GitHub release, but do not publish it (no tag). The next run replaces the draft.')
+        choice(name: 'PUBLISH', choices: ['none', 'draft', 'release'],
+               description: 'none: build and test only. draft: also upload a draft GitHub release (no tag). release: publish GitHub Release v<pubspec version>, creating the tag.')
     }
 
     stages {
@@ -65,24 +85,26 @@ pipeline {
                     if (!env.PB_VERSION) {
                         error 'No version: line in pubspec.yaml'
                     }
-                    currentBuild.displayName = "#${env.BUILD_NUMBER} · ${env.PB_VERSION}"
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} · ${env.PB_VERSION} · ${params.PUBLISH}"
                 }
-                echo "Releasing pion_bridge ${env.PB_VERSION} from ${env.PB_COMMIT}"
+                echo "pion_bridge ${env.PB_VERSION} at ${env.PB_COMMIT}, PUBLISH=${params.PUBLISH}"
                 sh 'docker build -t pion-bridge-builder:latest tooling/ci/linux'
-                withCredentials([usernamePassword(credentialsId: 'gurupras-jenkins-ci-cd',
-                                                  usernameVariable: 'GH_APP_ID',
-                                                  passwordVariable: 'GH_TOKEN')]) {
-                    inBuilder('python3 tooling/ci/publish_github_release.py check --version "$PB_VERSION"')
+                script {
+                    if (params.PUBLISH != 'none') {
+                        githubToken {
+                            inBuilder('python3 tooling/ci/publish_github_release.py check --version "$PB_VERSION"')
+                        }
+                    }
                 }
             }
         }
 
-        stage('Test and build') {
+        stage('Build and test') {
             parallel {
-                stage('Test') {
+                stage('Host tests') {
                     agent { label 'linux && docker' }
                     steps {
-                        checkoutReleaseCommit()
+                        checkoutRunCommit()
                         inBuilder('bash tooling/ci/test.sh')
                     }
                 }
@@ -90,9 +112,11 @@ pipeline {
                 stage('Android, Linux, Windows') {
                     agent { label 'linux && docker' }
                     steps {
-                        checkoutReleaseCommit()
+                        checkoutRunCommit()
                         inBuilder('bash tooling/ci/linux/build.sh')
                         stash name: 'dist-linux', includes: 'dist/*.tar.gz'
+                        inBuilder('bash tooling/ci/e2e/linux.sh')
+                        inBuilder('bash tooling/ci/e2e/android.sh', '--device /dev/kvm')
                     }
                 }
 
@@ -101,9 +125,11 @@ pipeline {
                     steps {
                         script {
                             macosBuildVM {
-                                checkoutReleaseCommit()
+                                checkoutRunCommit()
                                 sh 'bash tooling/ci/macos/build.sh'
                                 stash name: 'dist-apple', includes: 'dist/*.tar.gz'
+                                sh 'bash tooling/ci/e2e/apple.sh macos'
+                                sh 'bash tooling/ci/e2e/apple.sh ios'
                             }
                         }
                     }
@@ -111,17 +137,29 @@ pipeline {
             }
         }
 
+        stage('Windows e2e') {
+            agent { label 'windows && kvm' }
+            steps {
+                script {
+                    windowsBuildVM {
+                        checkoutRunCommit()
+                        unstash 'dist-linux'
+                        powershell '& tooling/ci/e2e/windows.ps1'
+                    }
+                }
+            }
+        }
+
         stage('Publish') {
+            when { expression { return params.PUBLISH != 'none' } }
             agent { label 'linux && docker' }
             steps {
-                checkoutReleaseCommit()
+                checkoutRunCommit()
                 unstash 'dist-linux'
                 unstash 'dist-apple'
-                withCredentials([usernamePassword(credentialsId: 'gurupras-jenkins-ci-cd',
-                                                  usernameVariable: 'GH_APP_ID',
-                                                  passwordVariable: 'GH_TOKEN')]) {
+                githubToken {
                     inBuilder('python3 tooling/ci/publish_github_release.py publish --version "$PB_VERSION" --commit "$PB_COMMIT"' +
-                              (params.DRAFT_ONLY ? ' --draft-only' : ''))
+                              (params.PUBLISH == 'draft' ? ' --draft-only' : ''))
                 }
                 archiveArtifacts artifacts: 'dist/*', fingerprint: true
             }

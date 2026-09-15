@@ -158,6 +158,10 @@ flutter test test/unit/ test/integration/
 cd example && flutter test --device-id <android-device> integration_test/plugin_integration_test.dart
 ./scripts/build_linux.sh
 cd example && flutter test --device-id linux integration_test/plugin_integration_test.dart
+
+# 5. Cross-platform e2e (every platform × bridge mode, against packaged archives)
+#    runs in the Jenkins pipeline; locally: scripts/package_release.sh linux-x64
+#    && tooling/ci/e2e/linux.sh — see RELEASING.md
 ```
 
 ### Test conventions (do not regress these)

@@ -9,6 +9,9 @@
 #
 # PION_BRIDGE_BINARIES_BASE_URL (environment) replaces the release download URL,
 # e.g. a mirror, or file:///path/to/dist to try archives before publishing them.
+# When it is set, platform builds download even if local outputs exist. The
+# extracted copy is cached per version in the build directory (flutter clean
+# refetches).
 
 set(_PION_BRIDGE_ROOT "${CMAKE_CURRENT_LIST_DIR}/..")
 set(_PION_BRIDGE_RELEASES "https://github.com/gurupras/flutter-pion-bridge/releases/download")

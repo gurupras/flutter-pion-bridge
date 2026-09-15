@@ -34,7 +34,8 @@ apply plugin: 'kotlin-android'
 // PION_BRIDGE_BUILD_FROM_SOURCE=1 instead reruns build_android.sh whenever go/
 // changes (needs Go, gomobile and the NDK).
 // PION_BRIDGE_BINARIES_BASE_URL replaces the release download URL, e.g. a
-// mirror, or file:///path/to/dist to try archives before publishing them.
+// mirror, or file:///path/to/dist to try archives before publishing them; when
+// set, the download is used even if local bindings exist.
 // ---------------------------------------------------------------------------
 def pluginRoot      = project.projectDir.parentFile
 def pionVersion     = file("${pluginRoot}/pubspec.yaml").readLines()
@@ -42,7 +43,8 @@ def pionVersion     = file("${pluginRoot}/pubspec.yaml").readLines()
         .replaceFirst(/^version:\s*/, '').replaceFirst(/[+\s].*$/, '')
 def buildFromSource = System.getenv('PION_BRIDGE_BUILD_FROM_SOURCE') == '1'
 def localJar        = file("${project.projectDir}/libs/pionbridge-go.jar")
-def useDownload     = !buildFromSource && !localJar.exists()
+def baseUrl         = System.getenv('PION_BRIDGE_BINARIES_BASE_URL')
+def useDownload     = !buildFromSource && (baseUrl || !localJar.exists())
 def downloadDir     = project.layout.buildDirectory.dir("pionbridge/${pionVersion}").get().asFile
 
 android {
@@ -63,7 +65,9 @@ android {
     }
 
     if (useDownload) {
-        sourceSets.main.jniLibs.srcDir(new File(downloadDir, 'jniLibs'))
+        // Replace, not add: local src/main/jniLibs may also exist when the
+        // download is forced, and duplicate .so paths fail the merge.
+        sourceSets.main.jniLibs.srcDirs = [new File(downloadDir, 'jniLibs')]
     }
 }
 
@@ -91,11 +95,11 @@ tasks.register('fetchGoBridge') {
     group       = 'build'
 
     inputs.property('version', pionVersion)
-    inputs.property('baseUrl', System.getenv('PION_BRIDGE_BINARIES_BASE_URL') ?: '')
+    inputs.property('baseUrl', baseUrl ?: '')
     outputs.dir(downloadDir)
 
     doLast {
-        def base = System.getenv('PION_BRIDGE_BINARIES_BASE_URL') ?:
+        def base = baseUrl ?:
                 "https://github.com/gurupras/flutter-pion-bridge/releases/download/v${pionVersion}"
         def name = "pionbridge-${pionVersion}-android.tar.gz"
         def hint = 'Build the binaries locally (scripts/build_android.sh), set ' +

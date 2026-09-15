@@ -13,9 +13,11 @@ Pod::Spec.new do |s|
   s.platform = :ios, '13.0'
 
   # Gomobile-generated xcframework: a local build (scripts/build_ios.sh) when
-  # present, otherwise this version's release archive.
+  # present, otherwise (or with PION_BRIDGE_BINARIES_BASE_URL set) this
+  # version's release archive.
   framework_dir = 'Frameworks'
-  unless File.exist?(File.join(__dir__, framework_dir, 'PionBridgeGo.xcframework'))
+  if ENV['PION_BRIDGE_BINARIES_BASE_URL'] ||
+     !File.exist?(File.join(__dir__, framework_dir, 'PionBridgeGo.xcframework'))
     framework_dir = PionBridgeBinaries.download(__dir__, 'ios')
   end
   s.vendored_frameworks = "#{framework_dir}/PionBridgeGo.xcframework"

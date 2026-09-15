@@ -31,7 +31,8 @@ if(NOT PION_BRIDGE_BUNDLE_BINARIES)
 endif()
 
 # build_linux.sh leaves local builds in bundle/lib (arm64 with an _arm64
-# suffix); without them, the release archive for this version is downloaded
+# suffix); without them, or with PION_BRIDGE_BINARIES_BASE_URL set, the
+# release archive for this version is downloaded
 # (build_support/pion_bridge_binaries.cmake). Both are installed under their
 # canonical names so the runtime lookup (lib/pionbridge) is the same everywhere.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
@@ -46,7 +47,7 @@ set(PIONBRIDGE_BINARY "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/pionbridge${PIONBR
 # side with dart:ffi (PionBridgeMode.shared). A local build may lack it (no
 # cross compiler for the arch); release archives always carry it.
 set(PIONBRIDGE_SHARED_LIB "${CMAKE_CURRENT_SOURCE_DIR}/bundle/lib/libpionbridge${PIONBRIDGE_ARCH_SUFFIX}.so")
-if(NOT EXISTS "${PIONBRIDGE_BINARY}")
+if(NOT EXISTS "${PIONBRIDGE_BINARY}" OR DEFINED ENV{PION_BRIDGE_BINARIES_BASE_URL})
   include("${CMAKE_CURRENT_SOURCE_DIR}/../build_support/pion_bridge_binaries.cmake")
   pion_bridge_download_binaries("${PIONBRIDGE_PLATFORM}" PIONBRIDGE_DOWNLOADED)
   set(PIONBRIDGE_BINARY "${PIONBRIDGE_DOWNLOADED}/pionbridge")

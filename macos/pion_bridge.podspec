@@ -12,10 +12,12 @@ Pod::Spec.new do |s|
   # Apps that only use shared mode with their own library skip the sidecar, as
   # PION_BRIDGE_BUNDLE_BINARIES=OFF does on Linux and Windows: set the variable
   # in the environment `pod install` (flutter build macos) runs in.
-  # Local builds (scripts/build_macos.sh) win when present; otherwise this
-  # version's release archive supplies both files.
+  # Local builds (scripts/build_macos.sh) win when present; otherwise (or with
+  # PION_BRIDGE_BINARIES_BASE_URL set) this version's release archive supplies
+  # both files.
   bundle = ENV['PION_BRIDGE_BUNDLE_BINARIES'] != 'OFF'
-  if bundle && !File.exist?(File.join(__dir__, 'Resources', 'pionbridge'))
+  if bundle && (ENV['PION_BRIDGE_BINARIES_BASE_URL'] ||
+                !File.exist?(File.join(__dir__, 'Resources', 'pionbridge')))
     downloaded = PionBridgeBinaries.download(__dir__, 'macos')
     s.resources          = ["#{downloaded}/pionbridge"]
     # Shared mode (PionBridgeMode.shared): embedded into the app's Frameworks

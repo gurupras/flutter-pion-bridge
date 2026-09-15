@@ -13,6 +13,8 @@
 #
 # PION_BRIDGE_BINARIES_BASE_URL (environment) replaces the release download URL,
 # e.g. a mirror, or file:///path/to/dist to try archives before publishing them.
+# When it is set, podspecs download even if local outputs exist. The extracted
+# copy is cached per version in <pod>/Downloaded (delete it to refetch).
 
 require 'digest'
 require 'fileutils'

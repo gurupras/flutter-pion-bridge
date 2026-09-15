@@ -36,8 +36,10 @@ Build outputs for Android:
 
 **Binaries are never committed.** Build outputs are gitignored; platform builds
 use local outputs when present, otherwise download the release archives for the
-`pubspec.yaml` version (`build_support/`). Releases are built and published by
-the Jenkins pipeline (`Jenkinsfile`, `tooling/ci/`) — see `RELEASING.md`.
+`pubspec.yaml` version (`build_support/`). Every push to master is built and
+e2e-tested by the Jenkins pipeline (`Jenkinsfile`, `tooling/ci/`), which
+releases the version in `pubspec.yaml` when it has no tag yet — see
+`RELEASING.md`.
 
 ## Architecture
 

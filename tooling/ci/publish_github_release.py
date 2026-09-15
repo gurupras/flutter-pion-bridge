@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Publish pion_bridge release archives as GitHub Release v<version>.
 
-  check    fail early if v<version> is already tagged/released, or CHANGELOG.md
-           has no section for it
+  check    decide whether this commit should be released: exit 0 when
+           v<version> is new and CHANGELOG.md documents it, exit 3 when the
+           version is already tagged or released (an ordinary push), and fail
+           on anything else — a version to release whose changelog entry is
+           missing included
   publish  write dist/SHA256SUMS, upload every archive to a draft release, then
            publish it; publishing creates the v<version> tag at --commit
            (--draft-only stops before publishing)
@@ -63,19 +66,34 @@ def changelog_section(version):
     return match.group(1).strip()
 
 
-def ensure_unreleased(version):
+# Exit code for "this version is already out"; the pipeline reads it to tell an
+# ordinary push from one that bumped the version.
+ALREADY_RELEASED = 3
+
+
+def released(version):
     tag = f"v{version}"
     status, _ = request("GET", f"{API}/git/ref/tags/{tag}", ok=(200, 404))
     if status == 200:
-        sys.exit(f"tag {tag} already exists; bump the version in pubspec.yaml")
+        return f"tag {tag} already exists"
     status, _ = request("GET", f"{API}/releases/tags/{tag}", ok=(200, 404))
     if status == 200:
-        sys.exit(f"release {tag} is already published; bump the version in pubspec.yaml")
+        return f"release {tag} is already published"
+    return None
+
+
+def ensure_unreleased(version):
+    reason = released(version)
+    if reason:
+        sys.exit(f"{reason}; bump the version in pubspec.yaml")
 
 
 def check(args):
+    reason = released(args.version)
+    if reason:
+        print(f"{reason} — nothing to release")
+        sys.exit(ALREADY_RELEASED)
     changelog_section(args.version)
-    ensure_unreleased(args.version)
     print(f"v{args.version} is unreleased and has a changelog entry")
 
 

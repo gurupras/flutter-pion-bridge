@@ -35,9 +35,9 @@ they exist instead of downloading.
 
 ## CI pipeline
 
-`Jenkinsfile` (Jenkins job **flutter-pion-bridge-release**) builds every
-platform from one commit and tests the packaged archives before anything can be
-published:
+`Jenkinsfile` (Jenkins multibranch job **flutter-pion-bridge**) runs on every
+push. It builds every platform from that commit and tests the packaged archives
+— the files a release ships — before anything can be published:
 
 | Stage | Where | What |
 |---|---|---|
@@ -45,30 +45,39 @@ published:
 | Android, Linux, Windows | builder container on dileant | build + package, then e2e on Linux (Xvfb) and an Android emulator |
 | macOS, iOS | disposable Tart VM on mini | build + package, then e2e on macOS and the `ci-iphone` simulator |
 | Windows e2e | disposable Windows VM on dileant | e2e on Windows desktop |
-| Publish | builder container | only when `PUBLISH` is `draft` or `release` |
+| Publish | builder container | only when this push bumped the version (see below) |
 
 The e2e test is `example/integration_test/e2e_test.dart`: two peers exchange
 text and binary over a DataChannel in every bridge mode the platform ships
 (websocket everywhere, shared on desktop, plus websocket↔shared interop). The
-`tooling/ci/e2e/` scripts remove local build outputs first, so the example app
-downloads the archives under test through `PION_BRIDGE_BINARIES_BASE_URL`.
-Run one locally after packaging, e.g. `scripts/package_release.sh linux-x64 &&
-tooling/ci/e2e/linux.sh`.
+`tooling/ci/e2e/` scripts point the example app at the archives under test with
+`PION_BRIDGE_BINARIES_BASE_URL`. Run one locally after packaging, e.g.
+`scripts/package_release.sh linux-x64 && tooling/ci/e2e/linux.sh`.
 
 ## Cutting a release
 
-1. Bump `version:` in `pubspec.yaml` and add a matching `## <version>` section
-   to `CHANGELOG.md`. Commit and push to `master`.
-2. In Jenkins, run **flutter-pion-bridge-release** with `PUBLISH=release`
-   (`draft` to stop at an unpublished draft; `none`, the default, only builds
-   and tests).
-3. Prepare fails fast if `v<version>` is already tagged or released, or the
-   changelog section is missing. After every build and e2e stage passes,
-   Publish uploads the archives plus `SHA256SUMS` to a draft release and
-   publishes it, which creates the `v<version>` tag on the tested commit.
-4. Apps pick it up by depending on the tag (or, later, the pub.dev version).
+There is no button: **a release is a version bump you push.**
 
-A failed run leaves no tag, only a draft release, which the next run replaces.
-A published version is never rebuilt: fix forward with a new version. The
-repository's *release immutability* setting keeps published assets and tags
-from being changed afterwards.
+```bash
+# pubspec.yaml: version: 4.4.0
+# CHANGELOG.md: ## 4.4.0 …
+git commit -am "chore: release 4.4.0" && git push
+```
+
+On a push to `master`, Prepare compares `pubspec.yaml`'s version with the tags
+on GitHub:
+
+- **already tagged or released** — an ordinary push. Everything is built and
+  tested, and Publish is skipped.
+- **not yet released** — this push is the release. After every build and e2e
+  stage passes, Publish uploads the archives plus `SHA256SUMS` to a draft
+  release and publishes it, which creates the `v<version>` tag on the tested
+  commit. A missing `## <version>` changelog section fails the run instead.
+
+Then apps depend on the new tag (or, later, the pub.dev version).
+
+A failed run leaves no tag, only a draft release: fix the problem and push
+again, and the next run replaces the draft. A published version is never
+rebuilt — fix forward with a new version. The repository's *release
+immutability* setting keeps published assets and tags from being changed
+afterwards.

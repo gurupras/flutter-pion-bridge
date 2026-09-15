@@ -1,6 +1,6 @@
 @Library('homelab-shared-lib') _
 
-// Build, e2e-test and (optionally) release pion_bridge. See RELEASING.md.
+// Build, e2e-test and release pion_bridge. See RELEASING.md.
 //
 // Every run builds all platforms' native binaries from one commit and runs the
 // example app's e2e test against the packaged archives — the files a release
@@ -12,10 +12,12 @@
 //                            disposable Tart VM on mini
 // plus the host test layers.
 //
-// PUBLISH=none (default) stops there. draft/release then upload the archives to
-// a GitHub Release v<version> (draft leaves it unpublished); publishing is what
-// creates the tag, on exactly the commit that was tested and built. A failed
-// run tags nothing and leaves at most a draft, which the next run replaces.
+// Releases need no button: a push to master whose pubspec.yaml version is not yet
+// tagged is released once every stage above passes — the Publish stage uploads the
+// archives to a draft GitHub Release and publishes it, which creates the
+// v<version> tag on exactly the commit that was tested. Any other push just builds
+// and tests. A failed run tags nothing and leaves at most a draft, which the next
+// run replaces, so recovering is another push.
 
 @NonCPS
 def pubspecVersion(String pubspec) {
@@ -36,9 +38,10 @@ def checkoutRunCommit() {
 
 // Runs a command in the builder image with the workspace mounted. Named volumes
 // keep Go, pub and Gradle caches warm between runs.
-def inBuilder(String command, String dockerArgs = '') {
+def inBuilder(Map opts = [:], String command) {
+    def dockerArgs = opts.dockerArgs ?: ''
     withEnv(["PB_COMMAND=${command}", "PB_DOCKER_ARGS=${dockerArgs}"]) {
-        sh '''
+        return sh(returnStatus: opts.returnStatus ?: false, script: '''
             docker run --rm $PB_DOCKER_ARGS \
                 -e PB_COMMAND -e PB_VERSION -e PB_COMMIT -e GH_TOKEN \
                 -v "$WORKSPACE":/workspace -w /workspace \
@@ -47,7 +50,7 @@ def inBuilder(String command, String dockerArgs = '') {
                 -v pion-bridge-pub-cache:/root/.pub-cache \
                 -v pion-bridge-gradle:/root/.gradle \
                 pion-bridge-builder:latest bash -c "$PB_COMMAND"
-        '''
+        ''')
     }
 }
 
@@ -69,11 +72,6 @@ pipeline {
         skipDefaultCheckout()
     }
 
-    parameters {
-        choice(name: 'PUBLISH', choices: ['none', 'draft', 'release'],
-               description: 'none: build and test only. draft: also upload a draft GitHub release (no tag). release: publish GitHub Release v<pubspec version>, creating the tag.')
-    }
-
     stages {
         stage('Prepare') {
             agent { label 'linux && docker' }
@@ -85,17 +83,31 @@ pipeline {
                     if (!env.PB_VERSION) {
                         error 'No version: line in pubspec.yaml'
                     }
-                    currentBuild.displayName = "#${env.BUILD_NUMBER} · ${env.PB_VERSION} · ${params.PUBLISH}"
                 }
-                echo "pion_bridge ${env.PB_VERSION} at ${env.PB_COMMIT}, PUBLISH=${params.PUBLISH}"
                 sh 'docker build -t pion-bridge-builder:latest tooling/ci/linux'
                 script {
-                    if (params.PUBLISH != 'none') {
+                    // Release only master, and only when the version in
+                    // pubspec.yaml has no tag yet: check exits 3 for a version
+                    // that is already out (an ordinary push), 0 when this push
+                    // bumped it, and non-zero on a real problem such as a
+                    // missing changelog entry.
+                    def branch = env.BRANCH_NAME ?: 'master'
+                    env.PB_RELEASE = 'false'
+                    if (branch == 'master') {
                         githubToken {
-                            inBuilder('python3 tooling/ci/publish_github_release.py check --version "$PB_VERSION"')
+                            def status = inBuilder(returnStatus: true,
+                                'python3 tooling/ci/publish_github_release.py check --version "$PB_VERSION"')
+                            if (status == 0) {
+                                env.PB_RELEASE = 'true'
+                            } else if (status != 3) {
+                                error "release check failed (exit ${status})"
+                            }
                         }
                     }
+                    currentBuild.displayName = "#${env.BUILD_NUMBER} · ${env.PB_VERSION}" +
+                        (env.PB_RELEASE == 'true' ? ' · release' : '')
                 }
+                echo "pion_bridge ${env.PB_VERSION} at ${env.PB_COMMIT}, release=${env.PB_RELEASE}"
             }
         }
 
@@ -116,7 +128,7 @@ pipeline {
                         inBuilder('bash tooling/ci/linux/build.sh')
                         stash name: 'dist-linux', includes: 'dist/*.tar.gz'
                         inBuilder('bash tooling/ci/e2e/linux.sh')
-                        inBuilder('bash tooling/ci/e2e/android.sh', '--device /dev/kvm')
+                        inBuilder(dockerArgs: '--device /dev/kvm', 'bash tooling/ci/e2e/android.sh')
                     }
                 }
 
@@ -151,15 +163,14 @@ pipeline {
         }
 
         stage('Publish') {
-            when { expression { return params.PUBLISH != 'none' } }
+            when { expression { return env.PB_RELEASE == 'true' } }
             agent { label 'linux && docker' }
             steps {
                 checkoutRunCommit()
                 unstash 'dist-linux'
                 unstash 'dist-apple'
                 githubToken {
-                    inBuilder('python3 tooling/ci/publish_github_release.py publish --version "$PB_VERSION" --commit "$PB_COMMIT"' +
-                              (params.PUBLISH == 'draft' ? ' --draft-only' : ''))
+                    inBuilder('python3 tooling/ci/publish_github_release.py publish --version "$PB_VERSION" --commit "$PB_COMMIT"')
                 }
                 archiveArtifacts artifacts: 'dist/*', fingerprint: true
             }

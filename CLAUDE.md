@@ -210,10 +210,11 @@ throughput numbers. Reference (wired gigabit LAN, 2026-07): ~800 Mbps up,
   only when stdin is a real pipe. Hosts that spawn it with `/dev/null` stdin
   (the Linux GTK plugin) get no orphan protection — do not "simplify" the
   pipe check away, it prevented the watchdog from killing healthy servers.
-- The `pion/sctp` fork's tests that assert RFC-default RTO timing pin the
-  upstream value via `pinUpstreamRTO` (the fork lowers rtoInitial/rtoMin —
-  see the comment in `go/go.mod`). New timing-sensitive fork tests likely
-  need the same pin.
+- The `pion/sctp` fork keeps upstream's RTO constants (see the comment in
+  `go/go.mod`). Do not lower rtoMin below the peer's 200 ms delayed-SACK
+  timer: application-limited associations then take spurious T3 timeouts and
+  collapse to a one-MTU cwnd — measured as a ~6× throughput loss for several
+  connections sharing one link.
 
 ## Git Workflow
 

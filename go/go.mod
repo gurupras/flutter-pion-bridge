@@ -37,10 +37,19 @@ require (
 	golang.org/x/tools v0.44.0 // indirect
 )
 
-// The vendored fork changes exactly two RTO constants for loopback latency
-// (rtoInitial 1000→200ms, rtoMin 1000→100ms in rtx_timer.go). The replace is
-// deliberately UNVERSIONED: a version-pinned replace silently no-ops when the
-// sctp dependency is bumped, reverting the patch without any warning. If you
-// upgrade pion/webrtc (and with it pion/sctp), rebase the two-constant patch
-// onto the new sctp version.
+// The vendored fork is upstream pion/sctp v1.10.0 plus one backport: upstream
+// 597b321 "Bound outbound SACK packets by the MTU" (unreleased as of v1.11.1),
+// in createSelectiveAckChunk / getGapAckBlocks. Without it a large receive
+// window plus scattered loss produces SACKs the peer cannot read ("short
+// buffer") and the association dies of T3 timeouts. Drop the fork once a
+// pion/sctp release carries that commit.
+//
+// The fork no longer lowers rtoInitial/rtoMin: at rtoMin 100 ms, below the
+// peer's 200 ms delayed-SACK timer, an association that idles between
+// messages took spurious T3 timeouts and collapsed to a one-MTU cwnd.
+//
+// The replace is deliberately UNVERSIONED: a version-pinned replace silently
+// no-ops when the sctp dependency is bumped, reverting the patch without any
+// warning. If you upgrade pion/webrtc (and with it pion/sctp), rebase the
+// backport onto the new sctp version, or remove the fork if upstream has it.
 replace github.com/pion/sctp => ./pion-sctp-patched

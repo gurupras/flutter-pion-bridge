@@ -11,10 +11,10 @@ import (
 
 const (
 	// RTO.Initial in msec.
-	rtoInitial float64 = 200
+	rtoInitial float64 = 1.0 * 1000
 
 	// RTO.Min in msec.
-	rtoMin float64 = 100
+	rtoMin float64 = 1.0 * 1000
 
 	// RTO.Max in msec.
 	defaultRTOMax float64 = 60.0 * 1000

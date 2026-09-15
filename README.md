@@ -230,6 +230,23 @@ Both isolates can hold a `PionBridge` against the same Go server. Each gets its 
 
 The convenience constructor `PionBridge.initialize()` is unchanged — it now internally calls `startServer()` followed by `connectExisting()`.
 
+## macOS: sandbox entitlements
+
+A sandboxed macOS app talks to the sidecar over `127.0.0.1`, which the sandbox
+denies unless the app declares the **client** entitlement. Flutter's template
+grants only `com.apple.security.network.server`, so add this to
+`macos/Runner/DebugProfile.entitlements` and `Release.entitlements`:
+
+```xml
+<key>com.apple.security.network.client</key>
+<true/>
+```
+
+Without it every connection fails with `SocketException: Connection failed (OS
+Error: Operation not permitted)`. Shared mode (`PionBridgeMode.shared`) runs
+in-process and needs no entitlement for the bridge itself, but WebRTC traffic
+to other peers still needs the client entitlement.
+
 ## Shared mode (desktop, in-process)
 
 By default the bridge runs as it always has (`PionBridgeMode.websocket`): on desktop the plugin spawns the Go server as a sidecar process and Dart talks to it over a localhost WebSocket. `PionBridgeMode.shared` loads the same server as a shared library inside the app process instead, and passes the same msgpack frames through `dart:ffi` calls:

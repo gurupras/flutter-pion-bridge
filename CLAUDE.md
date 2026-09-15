@@ -34,6 +34,11 @@ Build outputs for Android:
 
 **After any Go code change, you must rebuild the AAR and re-run the Flutter app.**
 
+**Binaries are never committed.** Build outputs are gitignored; platform builds
+use local outputs when present, otherwise download the release archives for the
+`pubspec.yaml` version (`build_support/`). Releases are built and published by
+the Jenkins pipeline (`Jenkinsfile`, `tooling/ci/`) — see `RELEASING.md`.
+
 ## Architecture
 
 ### Communication Flow

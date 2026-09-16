@@ -107,8 +107,33 @@ def ensure_can_write():
         "draft": True,
     })
     if status == 403:
-        sys.exit(denied)
+        sys.exit(f"{denied}\n{write_diagnostics()}")
     request("DELETE", f"{API}/releases/{release['id']}")
+
+
+def write_diagnostics():
+    """What the token actually is, for when a 403 contradicts the app settings."""
+    lines = []
+    req = urllib.request.Request(f"{API}/releases", method="POST", data=b"{}", headers={
+        "Authorization": f"Bearer {os.environ['GH_TOKEN']}",
+        "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json",
+    })
+    try:
+        urllib.request.urlopen(req).close()
+    except urllib.error.HTTPError as e:
+        for header in ("x-accepted-github-permissions", "x-github-request-id"):
+            lines.append(f"  {header}: {e.headers.get(header)}")
+    except OSError as e:
+        lines.append(f"  probe failed: {e}")
+    status, repos = request("GET", "https://api.github.com/installation/repositories?per_page=100",
+                            ok=(200, 403, 404))
+    if status == 200:
+        names = [r["full_name"] for r in repos.get("repositories", [])]
+        lines.append(f"  installation covers {repos.get('total_count')} repo(s): {', '.join(names[:10])}")
+    else:
+        lines.append(f"  GET /installation/repositories: HTTP {status}")
+    return "token diagnostics:\n" + "\n".join(lines)
 
 
 def check(args):

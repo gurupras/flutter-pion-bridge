@@ -127,6 +127,7 @@ pipeline {
             parallel {
                 stage('Host tests') {
                     agent { label 'linux && docker' }
+                    options { timeout(time: 30, unit: 'MINUTES') }
                     steps {
                         checkoutRunCommit()
                         inBuilder('bash tooling/ci/test.sh')
@@ -135,6 +136,7 @@ pipeline {
 
                 stage('Android, Linux, Windows') {
                     agent { label 'linux && docker' }
+                    options { timeout(time: 60, unit: 'MINUTES') }
                     steps {
                         checkoutRunCommit()
                         inBuilder('bash tooling/ci/linux/build.sh')
@@ -146,6 +148,7 @@ pipeline {
 
                 stage('macOS, iOS') {
                     agent { label 'macos && tart' }
+                    options { timeout(time: 60, unit: 'MINUTES') }
                     steps {
                         script {
                             macosBuildVM {
@@ -163,6 +166,7 @@ pipeline {
 
         stage('Windows e2e') {
             agent { label 'windows && kvm' }
+            options { timeout(time: 45, unit: 'MINUTES') }
             steps {
                 script {
                     windowsBuildVM {

@@ -10,6 +10,29 @@ export PATH="/usr/local/go/bin:$HOME/go/bin:$HOME/flutter/bin:/opt/homebrew/bin:
 export LANG=en_US.UTF-8
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+
+# Wait for the device to reach Booted, and no further. `simctl bootstatus`
+# waits for a full boot that never completes in these VMs — SpringBoard does
+# not come up and it hangs for as long as the stage allows — while installing
+# and launching an app on the Booted device works fine, which is all the test
+# needs. (`simctl spawn` is not a readiness signal: it succeeds on a shut-down
+# device.)
+boot_simulator() {
+  local udid="$1" waited=0 state
+  xcrun simctl boot "$udid" 2> /dev/null || true
+  while :; do
+    state="$(xcrun simctl list devices | sed -nE "s/.*$udid\) \((.*)\).*/\1/p")"
+    [ "$state" = Booted ] && break
+    if [ "$waited" -ge 300 ]; then
+      echo "simulator $udid stuck in state '$state' after ${waited}s" >&2
+      return 1
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  echo "simulator booted after ${waited}s"
+}
+
 platforms=("$@")
 [[ ${#platforms[@]} -gt 0 ]] || platforms=(macos ios)
 
@@ -34,7 +57,7 @@ for platform in "${platforms[@]}"; do
         runtime="$(awk '/^iOS/ {print $NF; exit}' <<< "$runtimes")"
         udid="$(xcrun simctl create ci-iphone com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")"
       fi
-      xcrun simctl bootstatus "$udid" -b > /dev/null
+      boot_simulator "$udid"
       flutter test -d "$udid" integration_test/e2e_test.dart
       ;;
     *)

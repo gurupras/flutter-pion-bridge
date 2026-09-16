@@ -91,14 +91,24 @@ def ensure_unreleased(version):
 def ensure_can_write():
     """Fail now, not after an hour of building, if the token cannot publish.
 
-    An empty release body creates nothing: GitHub answers 422 (permitted, but
-    invalid) when the app may write contents and 403 when it may not.
+    This creates a throwaway draft and deletes it: a draft creates no tag and
+    is visible to nobody, and it is a real write. An earlier version sent an
+    empty body expecting 422-versus-403 to tell permission apart, but GitHub
+    validates the body first, so a read-only token also answered 422 and the
+    run still failed an hour later at Publish.
     """
-    status, _ = request("POST", f"{API}/releases", body={}, ok=(403, 422))
+    denied = ("GH_TOKEN cannot create releases (403). On github.com/settings/apps "
+              "set the app's Contents permission to 'Read and write', then accept "
+              "the pending permission request on github.com/settings/installations "
+              "— until that is accepted the old read-only token stays in force.")
+    status, release = request("POST", f"{API}/releases", ok=(201, 403), body={
+        "tag_name": f"ci-write-preflight-{os.getpid()}",
+        "name": "CI write preflight (deleted immediately)",
+        "draft": True,
+    })
     if status == 403:
-        sys.exit("GH_TOKEN cannot create releases (403). Grant the GitHub App "
-                 "'Contents: Read and write' and accept the updated permissions "
-                 "on its installation.")
+        sys.exit(denied)
+    request("DELETE", f"{API}/releases/{release['id']}")
 
 
 def check(args):

@@ -16,7 +16,27 @@ WebRTC DataChannel / ICE / DTLS
 
 The Go server runs inside the app process (via gomobile bind). Dart communicates with it over a local WebSocket using a msgpack protocol. From Dart's perspective it's a simple async API — no subprocesses, no native FFI.
 
-## Requirements
+## Installing
+
+Add the plugin and build your app — no Go toolchain required:
+
+```yaml
+dependencies:
+  pion_bridge:
+    git:
+      url: https://github.com/gurupras/flutter-pion-bridge
+      ref: v4.4.0
+```
+
+Each platform build downloads the native binaries for that version from the
+[GitHub Release](https://github.com/gurupras/flutter-pion-bridge/releases) and
+verifies them against the release's `SHA256SUMS`. macOS apps need one extra
+entitlement — see [macOS: sandbox entitlements](#macos-sandbox-entitlements).
+
+The rest of this document covers building the binaries yourself, which you need
+only when working on the plugin (see also `RELEASING.md`).
+
+## Requirements (building from source)
 
 | Tool | Version |
 |------|---------|

@@ -1,5 +1,35 @@
 # Changelog
 
+## 4.4.0
+
+No runtime changes: `go/` and `lib/` are identical to 4.3.1. This release
+changes how the plugin is distributed and tested.
+
+- **Native binaries are no longer committed.** They ship as per-platform
+  archives on the GitHub Release for each version, and every platform build
+  downloads the ones matching `pubspec.yaml` and checks them against the
+  release's `SHA256SUMS`. Local build outputs are still used when present, so
+  the development loop is unchanged. Previously each release committed ~160 MB
+  of binaries, and a git dependency cloned all of it.
+- **Android apps no longer need Go, gomobile or the NDK.** The Gradle build
+  fetches the bindings instead of running `gomobile bind` on the consumer's
+  machine; `PION_BRIDGE_BUILD_FROM_SOURCE=1` restores the old behaviour.
+- **`PION_BRIDGE_BINARIES_BASE_URL`** overrides where binaries come from (a
+  mirror, or `file://…/dist` to test archives before publishing them) and
+  forces the download even when local builds exist.
+- **macOS apps must declare `com.apple.security.network.client`.** A sandboxed
+  app cannot reach the sidecar on 127.0.0.1 without it, failing with
+  "Operation not permitted"; Flutter's template grants only `network.server`.
+  This always applied — it is newly documented in the README.
+- **Cross-platform e2e tests.** `example/integration_test/e2e_test.dart`
+  exchanges text and binary over a DataChannel in every bridge mode a platform
+  ships (websocket everywhere, shared on desktop, plus interop between them).
+  CI runs it on Linux, Android, macOS, iOS and Windows against the packaged
+  archives before any release is published (`RELEASING.md`).
+- **Build fixes:** `build_ios.sh` removes the previous xcframework before
+  `gomobile bind`, so a second build in the same tree no longer fails;
+  `build_macos.sh` no longer exits on a SIGPIPE from `xcodebuild | head`.
+
 ## 4.3.1
 
 - **SCTP: bounded SACKs.** Backports upstream pion/sctp 597b321 ("Bound

@@ -17,6 +17,27 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # and launching an app on the Booted device works fine, which is all the test
 # needs. (`simctl spawn` is not a readiness signal: it succeeds on a shut-down
 # device.)
+# run_bounded <seconds> <command>... — macOS has no timeout(1), and a stalled
+# `flutter test` would otherwise sit until the Jenkins stage timeout.
+run_bounded() {
+  local limit="$1" pid waited=0
+  shift
+  "$@" &
+  pid=$!
+  while kill -0 "$pid" 2> /dev/null && [ "$waited" -lt "$limit" ]; do
+    sleep 10
+    waited=$((waited + 10))
+  done
+  if kill -0 "$pid" 2> /dev/null; then
+    echo "'$*' still running after ${waited}s; killing it" >&2
+    kill -9 "$pid" 2> /dev/null || true
+    pkill -f 'flutter_tools.snapshot test' 2> /dev/null || true
+    wait "$pid" 2> /dev/null || true
+    return 124
+  fi
+  wait "$pid"
+}
+
 boot_simulator() {
   local udid="$1" waited=0 state
   xcrun simctl boot "$udid" 2> /dev/null || true
@@ -57,8 +78,18 @@ for platform in "${platforms[@]}"; do
         runtime="$(awk '/^iOS/ {print $NF; exit}' <<< "$runtimes")"
         udid="$(xcrun simctl create ci-iphone com.apple.CoreSimulator.SimDeviceType.iPhone-17 "$runtime")"
       fi
+      # CoreSimulator wedges under memory pressure on this host (8 GB shared
+      # with a 4 GB VM): simctl calls stop returning and `flutter test` waits
+      # forever on an app that never launches, so the run is bounded. Erasing
+      # the device clears the wedge.
       boot_simulator "$udid"
-      flutter test -d "$udid" integration_test/e2e_test.dart
+      if ! run_bounded 900 flutter test -d "$udid" integration_test/e2e_test.dart; then
+        echo "iOS run failed or stalled; erasing the simulator and retrying once" >&2
+        xcrun simctl shutdown "$udid" 2> /dev/null || true
+        xcrun simctl erase "$udid"
+        boot_simulator "$udid"
+        run_bounded 900 flutter test -d "$udid" integration_test/e2e_test.dart
+      fi
       ;;
     *)
       echo "Unknown platform '$platform'. Use macos or ios." >&2

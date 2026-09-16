@@ -18,7 +18,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 # needs. (`simctl spawn` is not a readiness signal: it succeeds on a shut-down
 # device.)
 # run_bounded <seconds> <command>... — macOS has no timeout(1), and a stalled
-# `flutter test` would otherwise sit until the Jenkins stage timeout.
+# command would otherwise sit until the Jenkins stage timeout.
 run_bounded() {
   local limit="$1" pid waited=0
   shift
@@ -31,11 +31,49 @@ run_bounded() {
   if kill -0 "$pid" 2> /dev/null; then
     echo "'$*' still running after ${waited}s; killing it" >&2
     kill -9 "$pid" 2> /dev/null || true
-    pkill -f 'flutter_tools.snapshot test' 2> /dev/null || true
     wait "$pid" 2> /dev/null || true
     return 124
   fi
   wait "$pid"
+}
+
+# `flutter test` on a simulator reports its results and then does not exit
+# here — build #7 printed "All tests passed!" and was still running 3 minutes
+# later. Follow the output and stop as soon as it reports, instead of waiting
+# for a process that never returns.
+run_ios_test() {
+  local udid="$1" log="$2" waited=0 pid rc
+  : > "$log"
+  flutter test -d "$udid" integration_test/e2e_test.dart > "$log" 2>&1 &
+  pid=$!
+  while kill -0 "$pid" 2> /dev/null; do
+    if grep -q 'All tests passed!' "$log"; then
+      kill -9 "$pid" 2> /dev/null || true
+      wait "$pid" 2> /dev/null || true
+      cat "$log"
+      return 0
+    fi
+    if grep -q 'Some tests failed' "$log"; then
+      kill -9 "$pid" 2> /dev/null || true
+      wait "$pid" 2> /dev/null || true
+      cat "$log"
+      return 1
+    fi
+    if [ "$waited" -ge 900 ]; then
+      echo "iOS test produced no result after ${waited}s" >&2
+      kill -9 "$pid" 2> /dev/null || true
+      wait "$pid" 2> /dev/null || true
+      cat "$log"
+      return 124
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+  rc=0
+  wait "$pid" || rc=$?
+  cat "$log"
+  grep -q 'All tests passed!' "$log" && return 0
+  return "$rc"
 }
 
 # The device does not stay up on its own here: it was Booted when the run
@@ -104,13 +142,13 @@ for platform in "${platforms[@]}"; do
       keep_simulator_booted "$udid" &
       keeper=$!
       status=0
-      run_bounded 900 flutter test -d "$udid" integration_test/e2e_test.dart || status=$?
+      run_ios_test "$udid" "$REPO_ROOT/example/ios-e2e.log" || status=$?
       if [ "$status" -ne 0 ]; then
         echo "iOS run failed or stalled (exit $status); retrying once" >&2
         xcrun simctl shutdown "$udid" 2> /dev/null || true
         boot_simulator "$udid"
         status=0
-        run_bounded 900 flutter test -d "$udid" integration_test/e2e_test.dart || status=$?
+        run_ios_test "$udid" "$REPO_ROOT/example/ios-e2e.log" || status=$?
       fi
       kill "$keeper" 2> /dev/null || true
       [ "$status" -eq 0 ] || exit "$status"

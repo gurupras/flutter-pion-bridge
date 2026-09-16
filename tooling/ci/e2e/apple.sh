@@ -38,11 +38,29 @@ run_bounded() {
   wait "$pid"
 }
 
+# The device does not stay up on its own here: it was Booted when the run
+# started and Shutdown ten minutes later when flutter tried to install, which
+# fails with "Unable to lookup in current state: Shutdown". Re-boot it for as
+# long as the test runs.
+keep_simulator_booted() {
+  local udid="$1"
+  while :; do
+    if [ "$(simulator_state "$udid")" != Booted ]; then
+      xcrun simctl boot "$udid" 2> /dev/null || true
+    fi
+    sleep 15
+  done
+}
+
+simulator_state() {
+  xcrun simctl list devices | sed -nE "s/.*$1\) \((.*)\).*/\1/p"
+}
+
 boot_simulator() {
   local udid="$1" waited=0 state
   xcrun simctl boot "$udid" 2> /dev/null || true
   while :; do
-    state="$(xcrun simctl list devices | sed -nE "s/.*$udid\) \((.*)\).*/\1/p")"
+    state="$(simulator_state "$udid")"
     [ "$state" = Booted ] && break
     if [ "$waited" -ge 300 ]; then
       echo "simulator $udid stuck in state '$state' after ${waited}s" >&2
@@ -83,13 +101,19 @@ for platform in "${platforms[@]}"; do
       # forever on an app that never launches, so the run is bounded. Erasing
       # the device clears the wedge.
       boot_simulator "$udid"
-      if ! run_bounded 900 flutter test -d "$udid" integration_test/e2e_test.dart; then
-        echo "iOS run failed or stalled; erasing the simulator and retrying once" >&2
+      keep_simulator_booted "$udid" &
+      keeper=$!
+      status=0
+      run_bounded 900 flutter test -d "$udid" integration_test/e2e_test.dart || status=$?
+      if [ "$status" -ne 0 ]; then
+        echo "iOS run failed or stalled (exit $status); retrying once" >&2
         xcrun simctl shutdown "$udid" 2> /dev/null || true
-        xcrun simctl erase "$udid"
         boot_simulator "$udid"
-        run_bounded 900 flutter test -d "$udid" integration_test/e2e_test.dart
+        status=0
+        run_bounded 900 flutter test -d "$udid" integration_test/e2e_test.dart || status=$?
       fi
+      kill "$keeper" 2> /dev/null || true
+      [ "$status" -eq 0 ] || exit "$status"
       ;;
     *)
       echo "Unknown platform '$platform'. Use macos or ios." >&2

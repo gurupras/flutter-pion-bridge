@@ -166,13 +166,19 @@ pipeline {
 
         stage('Windows e2e') {
             agent { label 'windows && kvm' }
-            options { timeout(time: 45, unit: 'MINUTES') }
+            options { timeout(time: 75, unit: 'MINUTES') }
             steps {
                 script {
-                    windowsBuildVM {
-                        checkoutRunCommit(shallow: true)
-                        unstash 'dist-linux'
-                        powershell '& tooling/ci/e2e/windows.ps1'
+                    // The disposable Windows VM sometimes boots without its
+                    // Jenkins agent ever connecting (builds #6 and #8), which
+                    // otherwise fails a release that passed everywhere else.
+                    // The e2e run itself is repeatable, so retry the stage.
+                    retry(2) {
+                        windowsBuildVM {
+                            checkoutRunCommit(shallow: true)
+                            unstash 'dist-linux'
+                            powershell '& tooling/ci/e2e/windows.ps1'
+                        }
                     }
                 }
             }

@@ -138,6 +138,11 @@ for platform in "${platforms[@]}"; do
       # with a 4 GB VM): simctl calls stop returning and `flutter test` waits
       # forever on an app that never launches, so the run is bounded. Erasing
       # the device clears the wedge.
+      # Build before the simulator is running: attempts that compiled while the
+      # device was up stalled every time on this 8 GB host (#6-#8), and the
+      # retry only passed because the build was already cached. The test then
+      # just installs and runs.
+      run_bounded 1800 flutter build ios --simulator --debug
       boot_simulator "$udid"
       keep_simulator_booted "$udid" &
       keeper=$!

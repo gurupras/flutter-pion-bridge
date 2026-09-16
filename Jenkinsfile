@@ -26,9 +26,21 @@ def pubspecVersion(String pubspec) {
 }
 
 // Every stage works on the commit Prepare resolved, even if master moves mid-run.
-def checkoutRunCommit() {
+//
+// The disposable VMs clone over the network into an empty disk, where this
+// repository's history costs tens of minutes; they take a shallow copy, which
+// still contains PB_COMMIT because it is the tip Prepare just read. The
+// containers on dileant clone locally in seconds, so they keep full history.
+def checkoutRunCommit(Map opts = [:]) {
     deleteDir()
-    checkout scm
+    if (opts.shallow) {
+        checkout([$class: 'GitSCM',
+                  branches: [[name: env.PB_COMMIT]],
+                  userRemoteConfigs: [[url: 'https://github.com/gurupras/flutter-pion-bridge.git']],
+                  extensions: [[$class: 'CloneOption', shallow: true, depth: 20, noTags: true, honorRefspec: true]]])
+    } else {
+        checkout scm
+    }
     if (isUnix()) {
         sh "git checkout -q --detach ${env.PB_COMMIT}"
     } else {
@@ -137,7 +149,7 @@ pipeline {
                     steps {
                         script {
                             macosBuildVM {
-                                checkoutRunCommit()
+                                checkoutRunCommit(shallow: true)
                                 sh 'bash tooling/ci/macos/build.sh'
                                 stash name: 'dist-apple', includes: 'dist/*.tar.gz'
                                 sh 'bash tooling/ci/e2e/apple.sh macos'
@@ -154,7 +166,7 @@ pipeline {
             steps {
                 script {
                     windowsBuildVM {
-                        checkoutRunCommit()
+                        checkoutRunCommit(shallow: true)
                         unstash 'dist-linux'
                         powershell '& tooling/ci/e2e/windows.ps1'
                     }

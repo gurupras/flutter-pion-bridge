@@ -88,13 +88,27 @@ def ensure_unreleased(version):
         sys.exit(f"{reason}; bump the version in pubspec.yaml")
 
 
+def ensure_can_write():
+    """Fail now, not after an hour of building, if the token cannot publish.
+
+    An empty release body creates nothing: GitHub answers 422 (permitted, but
+    invalid) when the app may write contents and 403 when it may not.
+    """
+    status, _ = request("POST", f"{API}/releases", body={}, ok=(403, 422))
+    if status == 403:
+        sys.exit("GH_TOKEN cannot create releases (403). Grant the GitHub App "
+                 "'Contents: Read and write' and accept the updated permissions "
+                 "on its installation.")
+
+
 def check(args):
     reason = released(args.version)
     if reason:
         print(f"{reason} — nothing to release")
         sys.exit(ALREADY_RELEASED)
     changelog_section(args.version)
-    print(f"v{args.version} is unreleased and has a changelog entry")
+    ensure_can_write()
+    print(f"v{args.version} is unreleased, has a changelog entry, and can be published")
 
 
 def publish(args):

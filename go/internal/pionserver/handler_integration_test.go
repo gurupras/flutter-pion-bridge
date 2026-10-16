@@ -14,6 +14,9 @@ type testHarness struct {
 	registry *Registry
 	mu       sync.Mutex
 	events   []Message
+	// pcSettings, when set, gives the next createPC calls their own
+	// settings_engine, one entry per call; a nil entry keeps init's.
+	pcSettings []map[string]interface{}
 }
 
 // loopbackSettingsEngine is the settings_engine payload used by tests to
@@ -62,10 +65,17 @@ func (th *testHarness) clearEvents() {
 // createPC is a helper that creates a PeerConnection via the handler.
 func (th *testHarness) createPC(t *testing.T) string {
 	t.Helper()
+	data := map[string]interface{}{}
+	if len(th.pcSettings) > 0 {
+		if se := th.pcSettings[0]; se != nil {
+			data["settings_engine"] = se
+		}
+		th.pcSettings = th.pcSettings[1:]
+	}
 	resp := th.handler.HandleMessage(&Message{
 		Type: "pc:create",
 		ID:   1,
-		Data: map[string]interface{}{},
+		Data: data,
 	})
 	if resp.Type != "pc:create:ack" {
 		t.Fatalf("expected pc:create:ack, got %s: %v", resp.Type, resp.Data)

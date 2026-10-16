@@ -3,6 +3,7 @@ package pionserver
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 )
@@ -320,5 +321,174 @@ func TestHandleInit_DefaultAPI_PCCreateWorksWithoutInit(t *testing.T) {
 	pcHandle := th.createPC(t)
 	if len(pcHandle) != 32 {
 		t.Errorf("expected 32-char handle, got %q", pcHandle)
+	}
+}
+
+// ice_renomination reaches pion: its own check refuses a zero interval, which
+// it only sees when the key is applied. Without ice_renomination the interval
+// is ignored.
+func TestApplySettingsEngine_ICERenomination(t *testing.T) {
+	se := webrtc.SettingEngine{}
+	if err := applySettingsEngine(&se, map[string]interface{}{"ice_renomination": true}); err != nil {
+		t.Fatalf("ice_renomination=true: %v", err)
+	}
+	se = webrtc.SettingEngine{}
+	if err := applySettingsEngine(&se, map[string]interface{}{"ice_renomination": true, "ice_renomination_interval_ms": 2000}); err != nil {
+		t.Fatalf("with an interval: %v", err)
+	}
+	se = webrtc.SettingEngine{}
+	if err := applySettingsEngine(&se, map[string]interface{}{"ice_renomination": true, "ice_renomination_interval_ms": 0}); err == nil {
+		t.Fatal("a zero interval was accepted: the key did not reach pion")
+	}
+	se = webrtc.SettingEngine{}
+	if err := applySettingsEngine(&se, map[string]interface{}{"ice_renomination_interval_ms": 0}); err != nil {
+		t.Fatalf("an interval without ice_renomination should be ignored: %v", err)
+	}
+}
+
+// renominationSettings is the loopback test payload plus these keys: a
+// pc:create settings_engine replaces init's, it is not merged with it.
+func renominationSettings(extra map[string]interface{}) map[string]interface{} {
+	se := loopbackSettingsEngine()
+	for k, v := range extra {
+		se[k] = v
+	}
+	return se
+}
+
+// pion advertises a=ice-options:renomination exactly when the SettingEngine
+// has renomination enabled (the same flag that hands the ICE agent its
+// renomination options), so the offer shows whether the key took effect.
+// Renomination stays off unless ice_renomination is the bool true.
+func TestICERenomination_OffUnlessEnabled(t *testing.T) {
+	cases := []struct {
+		name string
+		se   map[string]interface{} // pc:create settings_engine; nil keeps init's
+		want bool
+	}{
+		{"no settings_engine", nil, false},
+		{"loopback only", renominationSettings(nil), false},
+		{"false", renominationSettings(map[string]interface{}{"ice_renomination": false}), false},
+		{"interval without the flag", renominationSettings(map[string]interface{}{"ice_renomination_interval_ms": 2000}), false},
+		{"not a bool", renominationSettings(map[string]interface{}{"ice_renomination": "true"}), false},
+		{"true", renominationSettings(map[string]interface{}{"ice_renomination": true}), true},
+		{"true with an interval", renominationSettings(map[string]interface{}{"ice_renomination": true, "ice_renomination_interval_ms": 2000}), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			th := newTestHarness()
+			th.pcSettings = []map[string]interface{}{c.se}
+			pc := th.createPC(t)
+			if resp := th.handler.HandleMessage(&Message{
+				Type: "pc:createDc", ID: 2, Handle: pc,
+				Data: map[string]interface{}{"label": "test", "options": map[string]interface{}{}},
+			}); resp.Type != "pc:createDc:ack" {
+				t.Fatalf("expected pc:createDc:ack, got %s: %v", resp.Type, resp.Data)
+			}
+			resp := th.handler.HandleMessage(&Message{Type: "pc:offer", ID: 3, Handle: pc, Data: map[string]interface{}{}})
+			if resp.Type != "pc:offer:ack" {
+				t.Fatalf("expected pc:offer:ack, got %s: %v", resp.Type, resp.Data)
+			}
+			sdp, _ := resp.Data["sdp"].(string)
+			if got := strings.Contains(sdp, "renomination"); got != c.want {
+				t.Errorf("offer advertises renomination = %v, want %v:\n%s", got, c.want, sdp)
+			}
+		})
+	}
+}
+
+// The same applies to init's settings_engine, which every pc:create without
+// its own inherits.
+func TestICERenomination_FromInit(t *testing.T) {
+	th := newTestHarness()
+	resp := th.handler.HandleMessage(&Message{
+		Type: "init", ID: 1,
+		Data: map[string]interface{}{"settings_engine": renominationSettings(map[string]interface{}{"ice_renomination": true})},
+	})
+	if resp.Type != "init:ack" {
+		t.Fatalf("expected init:ack, got %s: %v", resp.Type, resp.Data)
+	}
+	pc := th.createPC(t)
+	th.handler.HandleMessage(&Message{
+		Type: "pc:createDc", ID: 2, Handle: pc,
+		Data: map[string]interface{}{"label": "test", "options": map[string]interface{}{}},
+	})
+	offer := th.handler.HandleMessage(&Message{Type: "pc:offer", ID: 3, Handle: pc, Data: map[string]interface{}{}})
+	if sdp, _ := offer.Data["sdp"].(string); !strings.Contains(sdp, "renomination") {
+		t.Errorf("init's ice_renomination did not reach pc:create's offer:\n%s", sdp)
+	}
+}
+
+// A bad interval fails init with INVALID_REQUEST and names the key.
+func TestHandleInit_ICERenominationZeroInterval(t *testing.T) {
+	th := newTestHarness()
+	resp := th.handler.HandleMessage(&Message{
+		Type: "init", ID: 1,
+		Data: map[string]interface{}{"settings_engine": map[string]interface{}{
+			"ice_renomination": true, "ice_renomination_interval_ms": -1,
+		}},
+	})
+	if resp.Type != "error" || resp.Data["code"] != "INVALID_REQUEST" {
+		t.Fatalf("expected INVALID_REQUEST, got %s: %v", resp.Type, resp.Data)
+	}
+	if msg, _ := resp.Data["message"].(string); !strings.Contains(msg, "ice_renomination_interval_ms") {
+		t.Errorf("error does not name the key: %v", resp.Data)
+	}
+}
+
+// Peers connect with renomination on either side or both. The offerer is the
+// controlling agent, the only one that renominates.
+func TestICERenomination_Connects(t *testing.T) {
+	on := renominationSettings(map[string]interface{}{"ice_renomination": true, "ice_renomination_interval_ms": 500})
+	cases := []struct {
+		name              string
+		offerer, answerer map[string]interface{}
+	}{
+		{"both", on, on},
+		{"controlling only", on, nil},
+		{"controlled only", nil, on},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			th := newTestHarness()
+			th.pcSettings = []map[string]interface{}{c.offerer, c.answerer}
+			offerer, answerer, dc := th.createConnectedPCPair(t)
+			for handle, se := range map[string]map[string]interface{}{offerer: c.offerer, answerer: c.answerer} {
+				res, _ := th.registry.Lookup(handle)
+				sdp := res.(*webrtc.PeerConnection).LocalDescription().SDP
+				if strings.Contains(sdp, "renomination") != (se != nil) {
+					t.Fatalf("%s: renomination advertised = %v, want %v", handle, se == nil, se != nil)
+				}
+			}
+			// Stay up past several renomination intervals: a renomination
+			// that broke the selected pair would show here.
+			time.Sleep(2 * time.Second)
+			const text = "after renomination checks"
+			th.handler.HandleMessage(&Message{
+				Type: "dc:send", ID: 20, Handle: dc,
+				Data: map[string]interface{}{"data": text, "is_binary": false},
+			})
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				delivered := false
+				for _, e := range th.getEvents() {
+					if e.Type == "event:connectionStateChange" && (e.Handle == offerer || e.Handle == answerer) {
+						if s, _ := e.Data["state"].(string); s == "failed" || s == "disconnected" {
+							t.Fatalf("%s went %s", e.Handle, s)
+						}
+					}
+					if e.Type == "event:dataChannelMessage" && e.Handle != dc && e.Data["data"] == text {
+						delivered = true
+					}
+				}
+				if delivered {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the answerer did not receive the message")
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		})
 	}
 }

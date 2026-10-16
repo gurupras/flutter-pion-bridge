@@ -360,6 +360,16 @@ void main() {
       expect(map['stun_gather_timeout_ms'], 3000);
     });
 
+    test('toMap includes renomination', () {
+      const se = PionSettingsEngine(
+          iceRenomination: true, iceRenominationIntervalMs: 2000);
+      final map = se.toMap();
+      expect(map['ice_renomination'], true);
+      expect(map['ice_renomination_interval_ms'], 2000);
+      expect(const PionSettingsEngine().toMap().containsKey('ice_renomination'),
+          isFalse);
+    });
+
     test('toMap includes string settings', () {
       const se = PionSettingsEngine(multicastDnsHostName: 'myhost.local');
       final map = se.toMap();

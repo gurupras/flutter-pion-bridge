@@ -173,6 +173,18 @@ class PionSettingsEngine {
   final int? dtlsRetransmissionIntervalMs;
   final int? stunGatherTimeoutMs;
 
+  /// Lets the controlling side switch to a better candidate pair after it has
+  /// connected (pion's automatic renomination), so it can take the first pair
+  /// that works instead of waiting out the acceptance minimums. Only the
+  /// controlling side (the offerer) renominates; a controlled peer on pion/ice
+  /// v4.2 or later follows renominations whether or not it sets this.
+  final bool? iceRenomination;
+
+  /// How long the controlling side waits after connecting, and between
+  /// switches, before it renominates; pion's default (3 s) when null. Must be
+  /// greater than zero. Only used with [iceRenomination].
+  final int? iceRenominationIntervalMs;
+
   // String settings
   final String? multicastDnsHostName;
 
@@ -220,6 +232,8 @@ class PionSettingsEngine {
     this.relayAcceptanceMinWaitMs,
     this.dtlsRetransmissionIntervalMs,
     this.stunGatherTimeoutMs,
+    this.iceRenomination,
+    this.iceRenominationIntervalMs,
     this.multicastDnsHostName,
     this.interfaceWhitelist,
     this.includeLoopbackCandidate,
@@ -295,6 +309,10 @@ class PionSettingsEngine {
     }
     if (stunGatherTimeoutMs != null)
       map['stun_gather_timeout_ms'] = stunGatherTimeoutMs;
+    if (iceRenomination != null) map['ice_renomination'] = iceRenomination;
+    if (iceRenominationIntervalMs != null) {
+      map['ice_renomination_interval_ms'] = iceRenominationIntervalMs;
+    }
     if (multicastDnsHostName != null)
       map['multicast_dns_host_name'] = multicastDnsHostName;
     if (interfaceWhitelist != null)

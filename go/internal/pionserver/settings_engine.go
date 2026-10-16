@@ -46,6 +46,10 @@ import (
 //	  dtls_retransmission_interval_ms → SetDTLSRetransmissionInterval
 //	  sctp_rto_max_ms               → SetSCTPRTOMax
 //	  stun_gather_timeout_ms        → SetSTUNGatherTimeout
+//	  ice_renomination_interval_ms  → WithRenominationInterval (with ice_renomination)
+//
+//	Renomination:
+//	  ice_renomination (bool)       → SetICERenomination (automatic)
 //
 //	String:
 //	  multicast_dns_host_name → SetMulticastDNSHostName
@@ -156,6 +160,19 @@ func applySettingsEngine(se *webrtc.SettingEngine, cfg map[string]interface{}) e
 	}
 	if v, ok := toInt(cfg["relay_acceptance_min_wait_ms"]); ok {
 		se.SetRelayAcceptanceMinWait(time.Duration(v) * time.Millisecond)
+	}
+	// ice_renomination lets the controlling agent switch to a better pair after
+	// it has connected (pion's automatic renomination), so it can take the first
+	// pair that works, a relay included, instead of waiting out the acceptance
+	// minimums for a direct pair that may never come.
+	if v, ok := cfg["ice_renomination"].(bool); ok && v {
+		var opts []webrtc.RenominationOption
+		if ms, ok := toInt(cfg["ice_renomination_interval_ms"]); ok {
+			opts = append(opts, webrtc.WithRenominationInterval(time.Duration(ms)*time.Millisecond))
+		}
+		if err := se.SetICERenomination(opts...); err != nil {
+			return fmt.Errorf("ice_renomination_interval_ms: %w", err)
+		}
 	}
 	if v, ok := toInt(cfg["dtls_retransmission_interval_ms"]); ok {
 		se.SetDTLSRetransmissionInterval(time.Duration(v) * time.Millisecond)

@@ -1,5 +1,20 @@
 # Changelog
 
+## 4.5.0
+
+- **ICE renomination (opt-in).** `PionSettingsEngine.iceRenomination` turns on
+  pion's automatic renomination (`SetICERenomination`): once connected, the
+  controlling side (the offerer) keeps checking the other candidate pairs and
+  switches to a clearly better one, e.g. from a relay to a direct pair. A
+  caller can then take the first pair that works instead of waiting out the
+  acceptance minimums. `iceRenominationIntervalMs` sets how long it waits after
+  connecting and between switches (pion's default is 3 s); zero or less fails
+  `init` / `pc:create` with `INVALID_REQUEST`. Renomination stays off unless
+  `iceRenomination` is `true`, and a controlled peer on pion/ice v4.2 or later
+  follows renominations either way.
+- Older native builds ignore the new keys: a 4.5.0 Dart side against stale
+  local binaries connects as before, without renomination.
+
 ## 4.4.0
 
 No runtime changes: `go/` and `lib/` are identical to 4.3.1. This release

@@ -207,6 +207,18 @@ All fields are optional — omit any you don't need.
 | `dtlsRetransmissionIntervalMs` | `SetDTLSRetransmissionInterval` |
 | `stunGatherTimeoutMs` | `SetSTUNGatherTimeout` |
 
+**ICE renomination**
+
+| Field | Pion method |
+|-------|------------|
+| `iceRenomination` | `SetICERenomination` (automatic; off unless `true`) |
+| `iceRenominationIntervalMs` | `WithRenominationInterval` (**only with `iceRenomination`**; must be > 0) |
+
+Only the controlling side (the offerer) renominates: after it connects it keeps
+checking the other candidate pairs and switches to a clearly better one, e.g.
+from a relay to a direct pair. A controlled peer on pion/ice v4.2 or later
+follows these switches whether or not it enables renomination itself.
+
 **String**
 
 | Field | Pion method |
